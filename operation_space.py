@@ -7,6 +7,30 @@ from pylibfranka import  RealtimeConfig, Robot, Torques
 
 from utils import compute_6d_error, create_target_frame_translation_only
 
+def rot_matrix_to_axis_angle(R):
+    angle = np.arccos(np.clip((np.trace(R) - 1) / 2, -1.0, 1.0))
+    if angle < 1e-6:
+        return np.zeros(3)
+    axis = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]]) / (2 * np.sin(angle))
+    return axis * angle
+
+def axis_angle_to_rot_matrix(rvec):
+    angle = np.linalg.norm(rvec)
+    if angle < 1e-6:
+        return np.eye(3)
+    axis = rvec / angle
+    K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+def slerp_rot_matrix(R1, R2, t):
+    R_rel = R1.T @ R2
+    rvec = rot_matrix_to_axis_angle(R_rel)
+    return R1 @ axis_angle_to_rot_matrix(rvec * t)
+
+# EMA Filter
+# torque rate limiter
+# nullspace control
+
 
 def main():
     # Parse command line arguments
@@ -16,6 +40,8 @@ def main():
 
     # Connect to robot
     robot = Robot(args.ip, RealtimeConfig.kIgnore)
+
+    decay = 0.995
 
     try:
         # Set collision behavior
@@ -38,6 +64,7 @@ def main():
 
         time_elapsed = 0.0
         motion_finished = False
+        # NOTE: set default values for now
         max_torques = np.array([20.0, 20.0, 20.0, 20.0, 6.0, 6.0, 6.0])  # Conservative torque limits for testing
 
         # Get initial state and model
@@ -45,7 +72,6 @@ def main():
         initial_cartesian_pose = np.array(robot_state.O_T_EE).reshape(4, 4)
 
         model = robot.load_model()
-        # Define target position (translation only, no rotation change)
         target_position = np.array([
             initial_cartesian_pose[0, 3] + 0.1,  # x offset
             initial_cartesian_pose[1, 3],         # y (unchanged)
@@ -66,8 +92,14 @@ def main():
         # Trajectory duration
         trajectory_duration = 5.0        
         # Torque clamping for conservative testing
-        max_delta_tau = 0.1
+        max_delta_tau = 1.0
         prev_tau_d = np.zeros(7)         
+
+        # Initialize current state values for EMA smoothing
+        current_motion_gains = motion_gains.copy()
+        current_damping_gains = damping_gains.copy()
+        current_target_frame = initial_cartesian_pose.copy()
+
         # External control loop
         while not motion_finished:
             # Read robot state and duration
@@ -78,12 +110,17 @@ def main():
             # Update time
             time_elapsed += duration.to_sec()
             
-            # Smooth trajectory generation (minimum jerk)
-            tau = min(time_elapsed / trajectory_duration, 1.0)
-            alpha = 10 * tau**3 - 15 * tau**4 + 6 * tau**5
+            # EMA Smoothing
+            current_motion_gains = decay * current_motion_gains + (1 - decay) * motion_gains
+            current_damping_gains = decay * current_damping_gains + (1 - decay) * damping_gains
             
-            current_target_frame = initial_cartesian_pose.copy()
-            current_target_frame[0:3, 3] = initial_cartesian_pose[0:3, 3] + alpha * (target_position - initial_cartesian_pose[0:3, 3])
+            # Position Lerp
+            current_target_frame[0:3, 3] = decay * current_target_frame[0:3, 3] + (1 - decay) * target_frame[0:3, 3]
+            
+            # Rotation Slerp
+            R_current = current_target_frame[0:3, 0:3]
+            R_target = target_frame[0:3, 0:3]
+            current_target_frame[0:3, 0:3] = slerp_rot_matrix(R_current, R_target, 1 - decay)
 
             # Get current pose
             current_pose = np.array(robot_state.O_T_EE).reshape(4, 4)
@@ -96,7 +133,7 @@ def main():
 
             error_6d = compute_6d_error(current_pose, current_target_frame)
 
-            des_acc = motion_gains * error_6d - damping_gains * eef_velocity
+            des_acc = current_motion_gains * error_6d - current_damping_gains * eef_velocity
 
             I = np.eye(6)
             M_inv = np.linalg.inv(M)
