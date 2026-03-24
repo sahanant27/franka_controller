@@ -65,7 +65,8 @@ def main():
         time_elapsed = 0.0
         motion_finished = False
         # NOTE: set default values for now
-        max_torques = np.array([20.0, 20.0, 20.0, 20.0, 6.0, 6.0, 6.0])  # Conservative torque limits for testing
+        
+        max_torques = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])  # Conservative torque limits for testing
 
         # Get initial state and model
         robot_state, duration = active_control.readOnce()
