@@ -5,7 +5,12 @@ import numpy as np
 
 from pylibfranka import  RealtimeConfig, Robot, Torques
 
-from utils import compute_6d_error, create_target_frame_translation_only
+from utils import (
+    compute_6d_error,
+    create_delta_frame_rotation_axis,
+    create_delta_frame_translation_axis,
+    goto_pose,
+)
 
 
 def franka_array_to_matrix(values, shape):
@@ -59,10 +64,6 @@ def slerp_rot_matrix(R1, R2, t):
     rvec = rot_matrix_to_axis_angle(R_rel)
     return R1 @ axis_angle_to_rot_matrix(rvec * t)
 
-# EMA Filter
-# torque rate limiter
-# nullspace control
-
 
 def main():
     # Parse command line arguments
@@ -92,6 +93,9 @@ def main():
         # First move the robot to a suitable joint configuration
         print("Please make sure to have the user stop button at hand!")
         input("Press Enter to continue...")
+        print("Moving to home configuration...")
+        goto_pose(robot)
+        print("Home reached. Starting operation-space control.")
         active_control = robot.start_torque_control()
 
         time_elapsed = 0.0
@@ -105,14 +109,21 @@ def main():
         initial_cartesian_pose = franka_array_to_matrix(robot_state.O_T_EE, (4, 4))
 
         model = robot.load_model()
-        target_position = np.array([
-            initial_cartesian_pose[0, 3] + 0.1,  # x offset
-            initial_cartesian_pose[1, 3],         # y (unchanged)
-            initial_cartesian_pose[2, 3]          # z (unchanged)
-        ])
 
-        target_frame = initial_cartesian_pose.copy()
-        target_frame[0:3, 3] = target_position
+        # Build target pose from single-axis delta transforms for controller checks.
+        # Keep only ONE test active at a time.
+        # delta_translation = create_delta_frame_translation_axis("x", 0.10)  # Active: +10 cm on X
+        # delta_translation = create_delta_frame_translation_axis("y", 0.10)  # +10 cm on Y
+        # delta_translation = create_delta_frame_translation_axis("z", 0.10)  # +10 cm on Z
+        delta_translation = np.eye(4)  # Active: no translation change
+        
+        delta_rotation = np.eye(4)  # Active: no rotation change
+        delta_rotation = create_delta_frame_rotation_axis("x", np.deg2rad(5.0))  # +5 deg about X
+        # delta_rotation = create_delta_frame_rotation_axis("y", np.deg2rad(5.0))  # +5 deg about Y
+        # delta_rotation = create_delta_frame_rotation_axis("z", np.deg2rad(5.0))  # +5 deg about Z
+
+        # Apply translation first, then rotation in the EE/local frame.
+        target_frame = initial_cartesian_pose @ delta_translation @ delta_rotation
         
         # Motion and damping gains
         base_gains = np.array([150.0, 150.0, 150.0, 50.0, 50.0, 50.0])

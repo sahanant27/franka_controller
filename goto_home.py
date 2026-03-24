@@ -64,21 +64,87 @@ class SimpleMotionGenerator:
         return 10 * (t**3) - 15 * (t**4) + 6 * (t**5)
 
 
+def goto_pose(
+    robot,
+    target_joint_position=None,
+    duration=3.0,
+    wait_time=0.5,
+    joint_stiffness=None,
+):
+    """Move the robot to a specified joint configuration using joint impedance control."""
+    if target_joint_position is None:
+        target_joint_position = [0.0, -0.3, 0.0, -1.8, 0.0, 1.5, 0.0]
+    if joint_stiffness is None:
+        joint_stiffness = [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+
+    joint_stiffness = np.array(joint_stiffness)
+    joint_damping = 2.0 * np.sqrt(joint_stiffness)
+
+    # Get initial state
+    initial_state = robot.read_once()
+    current_position = np.array(initial_state.q)
+
+    # Start torque control
+    active_control = robot.start_torque_control()
+
+    # Create a model instance from robot
+    model = robot.load_model()
+
+    trajectory = SimpleMotionGenerator(
+        current_position,
+        target_joint_position,
+        duration=duration,
+    )
+    trajectory.start()
+
+    target_reached = False
+    wait_started = False
+    wait_start_time = 0.0
+
+    while True:
+        # Read robot state
+        robot_state, _ = active_control.readOnce()
+
+        # Get state variables
+        coriolis = np.array(model.coriolis(robot_state))
+        q = np.array(robot_state.q)
+        dq = np.array(robot_state.dq)
+
+        # Get current target from trajectory
+        q_goal = trajectory.get_position()
+
+        # Compute error to desired equilibrium joint configuration
+        position_error = q - q_goal
+
+        # Compute joint-space impedance control
+        tau_task = -joint_stiffness * position_error - joint_damping * dq
+
+        # Add coriolis compensation
+        tau_d = tau_task + coriolis
+
+        # Convert to array for Torques command
+        torque_command = Torques(tau_d.tolist())
+        torque_command.motion_finished = False
+        active_control.writeOnce(torque_command)
+
+        # Check if trajectory is finished
+        if trajectory.is_finished() and not target_reached:
+            target_reached = True
+            wait_started = True
+            wait_start_time = time.time()
+
+        # Check if we've waited long enough
+        if wait_started and (time.time() - wait_start_time >= wait_time):
+            torque_command.motion_finished = True
+            active_control.writeOnce(torque_command)
+            break
+
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--ip", type=str, default="172.16.0.2", help="Robot IP address")
     args = parser.parse_args()
-
-    # Define a sequence of target joint configurations
-    target_joint_positions = [
-        # Home position (slightly bent arm)
-        [0.0, -0.3, 0.0, -1.8, 0.0, 1.5, 0.0],
-    ]
-
-    # Compliance parameters
-    joint_stiffness = [50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
-    joint_damping = [2.0 * np.sqrt(k) for k in joint_stiffness]
 
     try:
         # Connect to robot
@@ -92,74 +158,7 @@ def main():
             [100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
         )
 
-        # Get initial state
-        initial_state = robot.read_once()
-        current_position = np.array(initial_state.q)
-
-        # Start torque control
-        active_control = robot.start_torque_control()
-
-        # Create a model instance from robot
-        model = robot.load_model()
-
-        # Main control variables
-        wait_time = 0.5  # Time to wait at each position before moving to next
-
-        # For loop over target positions
-        for target_position in target_joint_positions:
-            # Initialize trajectory for this target
-            trajectory = SimpleMotionGenerator(
-                current_position,
-                target_position,
-                duration=3.0,
-            )
-            trajectory.start()
-
-            # Control until we reach target and wait time is complete
-            target_reached = False
-            wait_started = False
-            wait_start_time = 0
-
-            # Control loop for current trajectory
-            while True:
-                # Read robot state
-                robot_state, _ = active_control.readOnce()
-
-                # Get state variables
-                coriolis = np.array(model.coriolis(robot_state))
-                q = np.array(robot_state.q)
-                dq = np.array(robot_state.dq)
-
-                # Get current target from trajectory
-                q_goal = trajectory.get_position()
-
-                # Compute error to desired equilibrium joint configuration
-                position_error = q - q_goal
-
-                # Compute joint-space impedance control
-                tau_task = np.zeros(7)
-                for i in range(7):
-                    tau_task[i] = -joint_stiffness[i] * position_error[i] - joint_damping[i] * dq[i]
-
-                # Add coriolis compensation
-                tau_d = tau_task + coriolis
-
-                # Convert to array for Torques command
-                torque_command = Torques(tau_d.tolist())
-                torque_command.motion_finished = False
-                active_control.writeOnce(torque_command)
-
-                # Check if trajectory is finished
-                if trajectory.is_finished() and not target_reached:
-                    target_reached = True
-                    wait_started = True
-                    wait_start_time = time.time()
-
-                # Check if we've waited long enough
-                if wait_started and (time.time() - wait_start_time >= wait_time):
-                    # Update current position for next trajectory
-                    current_position = q_goal
-                    break
+        goto_pose(robot)
 
     except Exception as e:
         print(f"\nError occurred: {e}")
