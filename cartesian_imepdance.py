@@ -5,7 +5,7 @@ import numpy as np
 
 from pylibfranka import  RealtimeConfig, Robot, Torques
 
-from utils import compute_6d_error, create_target_frame_translation_only
+from utils import compute_pose_error, create_target_frame_translation_only
 
 def rot_matrix_to_axis_angle(R):
     angle = np.arccos(np.clip((np.trace(R) - 1) / 2, -1.0, 1.0))
@@ -136,7 +136,7 @@ def main():
             eef_velocity = J @ dq
             # Compute 6D error for OSC
 
-            error_6d = compute_6d_error(current_pose, current_target_frame)
+            error_6d = compute_pose_error(current_pose, current_target_frame)
             # Clamp first 3 and the other 3 separately
 
             error_i += np.concatenate([
@@ -165,7 +165,7 @@ def main():
             torque_command.motion_finished = False
 
             # Trajectory completion check - if error is close to zero
-            final_error_6d = compute_6d_error(current_pose, target_frame)
+            final_error_6d = compute_pose_error(current_pose, target_frame)
             error_magnitude = np.linalg.norm(final_error_6d)
             if error_magnitude < error_threshold:
                 torque_command.motion_finished = True
