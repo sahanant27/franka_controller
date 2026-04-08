@@ -6,6 +6,58 @@ def _as_rotation_matrix(matrix):
     return matrix[:3, :3] if matrix.shape == (4, 4) else matrix
 
 
+def _matrix_to_quaternion(matrix):
+    """Convert a 3x3 or 4x4 rotation matrix to quaternion [w, x, y, z]."""
+    rotation_matrix = _as_rotation_matrix(matrix)
+    trace = np.trace(rotation_matrix)
+
+    if trace > 0.0:
+        scale = 0.5 / np.sqrt(trace + 1.0)
+        w = 0.25 / scale
+        x = (rotation_matrix[2, 1] - rotation_matrix[1, 2]) * scale
+        y = (rotation_matrix[0, 2] - rotation_matrix[2, 0]) * scale
+        z = (rotation_matrix[1, 0] - rotation_matrix[0, 1]) * scale
+    elif rotation_matrix[0, 0] > rotation_matrix[1, 1] and rotation_matrix[0, 0] > rotation_matrix[2, 2]:
+        scale = 2.0 * np.sqrt(1.0 + rotation_matrix[0, 0] - rotation_matrix[1, 1] - rotation_matrix[2, 2])
+        w = (rotation_matrix[2, 1] - rotation_matrix[1, 2]) / scale
+        x = 0.25 * scale
+        y = (rotation_matrix[0, 1] + rotation_matrix[1, 0]) / scale
+        z = (rotation_matrix[0, 2] + rotation_matrix[2, 0]) / scale
+    elif rotation_matrix[1, 1] > rotation_matrix[2, 2]:
+        scale = 2.0 * np.sqrt(1.0 + rotation_matrix[1, 1] - rotation_matrix[0, 0] - rotation_matrix[2, 2])
+        w = (rotation_matrix[0, 2] - rotation_matrix[2, 0]) / scale
+        x = (rotation_matrix[0, 1] + rotation_matrix[1, 0]) / scale
+        y = 0.25 * scale
+        z = (rotation_matrix[1, 2] + rotation_matrix[2, 1]) / scale
+    else:
+        scale = 2.0 * np.sqrt(1.0 + rotation_matrix[2, 2] - rotation_matrix[0, 0] - rotation_matrix[1, 1])
+        w = (rotation_matrix[1, 0] - rotation_matrix[0, 1]) / scale
+        x = (rotation_matrix[0, 2] + rotation_matrix[2, 0]) / scale
+        y = (rotation_matrix[1, 2] + rotation_matrix[2, 1]) / scale
+        z = 0.25 * scale
+
+    quaternion = np.array([w, x, y, z], dtype=float)
+    return quaternion / np.linalg.norm(quaternion)
+
+
+def _quat_conjugate(quaternion):
+    return np.array([quaternion[0], -quaternion[1], -quaternion[2], -quaternion[3]], dtype=float)
+
+
+def _quat_multiply(q1, q2):
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ],
+        dtype=float,
+    )
+
+
 def matrix_to_rpy(rotation_matrix):
     """Convert a rotation matrix to roll, pitch, yaw (radians)."""
     rotation_matrix = _as_rotation_matrix(rotation_matrix)
@@ -103,8 +155,15 @@ def slerp_rot_matrix(start_rotation, goal_rotation, fraction):
 
 
 def compute_pose_error(current_pose, target_pose):
-    """Compute 6D pose error as position plus axis-angle orientation error."""
+    """Compute 6D pose error using a Franka-style orientation convention."""
     position_error = target_pose[:3, 3] - current_pose[:3, 3]
-    rotation_error = _as_rotation_matrix(target_pose) @ _as_rotation_matrix(current_pose).T
-    orientation_error = rot_matrix_to_axis_angle(rotation_error)
+    current_rotation = _as_rotation_matrix(current_pose)
+    q_current = _matrix_to_quaternion(current_rotation)
+    q_target = _matrix_to_quaternion(target_pose)
+
+    if np.dot(q_target, q_current) < 0.0:
+        q_current = -q_current
+
+    error_quaternion = _quat_multiply(_quat_conjugate(q_current), q_target)
+    orientation_error = -current_rotation @ error_quaternion[1:]
     return np.concatenate([position_error, orientation_error])

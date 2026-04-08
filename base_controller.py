@@ -44,7 +44,6 @@ class BaseController:
         self.max_delta_tau = float(self.config.max_delta_tau)
         self.robot_state = None
         self.duration = None
-        self._prev_value = None
 
         self._set_collision_behavior()
 
@@ -136,9 +135,8 @@ class BaseController:
 
     def apply_torque_rate_limit(self, tau_desired: np.ndarray) -> np.ndarray:
         """Apply per-joint torque rate limiting using configured max_delta_tau."""
-        self._prev_value = np.zeros_like(self.robot_state.tau_J_d) if self._prev_value is None else self._prev_value
-        self._prev_value = limit_torque_rate(tau_desired, self._prev_value, self.max_delta_tau)
-        return self._prev_value
+        tau_reference = np.array(self.robot_state.tau_J_d)
+        return limit_torque_rate(tau_desired, tau_reference, self.max_delta_tau)
 
     def clip_torques(self, tau: np.ndarray) -> np.ndarray:
         """Clip torques using configured per-joint limits."""

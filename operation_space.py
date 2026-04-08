@@ -71,7 +71,8 @@ class OperationSpaceController(BaseController):
 
         mass_matrix_inv = np.linalg.inv(mass_matrix)
         lambda_inv = jacobian @ mass_matrix_inv @ jacobian.T
-        tau_d = jacobian.T @ np.linalg.inv(lambda_inv) @ des_acc + self._coriolis
+        lambda_inv_damped = lambda_inv + 1e-3 * np.eye(6)
+        tau_d = jacobian.T @ np.linalg.inv(lambda_inv_damped) @ des_acc + self._coriolis
 
         tau_d = self.apply_torque_rate_limit(tau_d)
         tau_d = self.clip_torques(tau_d)
