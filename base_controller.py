@@ -3,7 +3,7 @@ from typing import Sequence
 
 import numpy as np
 
-from pylibfranka import ControllerMode, RealtimeConfig, Robot
+from pylibfranka import ControllerMode, RealtimeConfig, Robot, Torques
 
 from utils.control import franka_array_to_matrix, limit_torque_rate
 from utils.motion import goto_pose
@@ -52,6 +52,7 @@ class BaseController:
 
         self.robot_state = None
         self.duration = None
+        self._prev_value = None
 
     def _set_collision_behavior(self) -> None:
         self.robot.set_collision_behavior(
@@ -84,73 +85,80 @@ class BaseController:
         """Move robot to the project home configuration."""
         goto_pose(self.robot)
 
-    def curr_robot_state(self):
-        """Read a single state sample from active control."""
-        self.robot_state, self.duration = self.active_control.readOnce()
-        return self.robot_state
-
-    def read_state(self):
+    def _update_state(self):
         """Read and cache one state sample; return (robot_state, duration)."""
-        self.curr_robot_state()
+        self.robot_state, self.duration = self.active_control.readOnce()
         return self.robot_state, self.duration
 
-    def _require_cached_state(self):
-        if self.robot_state is None:
-            raise RuntimeError("No cached robot state. Call read_state() once before accessing state properties.")
-        return self.robot_state
-
+    ### Helper properties and methods for controller implementations ###
     @property
     def _joint_pose(self):
         """Return current 7-DOF joint position vector."""
-        return np.array(self._require_cached_state().q)
+        return np.array(self.robot_state.q)
 
     @property
     def _cartesian_pose(self):
         """Return current end-effector pose as a 4x4 matrix."""
-        return franka_array_to_matrix(self._require_cached_state().O_T_EE, (4, 4))
+        return franka_array_to_matrix(self.robot_state.O_T_EE, (4, 4))
 
     @property
     def _mass_matrix(self):
         """Return 7x7 joint-space mass matrix."""
-        return franka_array_to_matrix(self.model.mass(self._require_cached_state()), (7, 7))
+        return franka_array_to_matrix(self.model.mass(self.robot_state), (7, 7))
 
     @property
     def _jacobian(self):
         """Return 6x7 end-effector Jacobian in base frame."""
-        return franka_array_to_matrix(self.model.zero_jacobian(self._require_cached_state()), (6, 7))
+        return franka_array_to_matrix(self.model.zero_jacobian(self.robot_state), (6, 7))
 
-    def get_joint_pose(self, robot_state=None) -> np.ndarray:
-        state = self._require_cached_state() if robot_state is None else robot_state
-        return np.array(state.q)
+  
+    ### Motion Generation Helper Methods ###
+    ## Maybe a different class initself we will look into this later ##
 
-    def get_cartesian_pose(self, robot_state=None) -> np.ndarray:
-        state = self._require_cached_state() if robot_state is None else robot_state
-        return franka_array_to_matrix(state.O_T_EE, (4, 4))
+    ### GOTO HOME Motion () """ 
 
-    def get_mass_matrix(self, robot_state=None) -> np.ndarray:
-        state = self._require_cached_state() if robot_state is None else robot_state
-        return franka_array_to_matrix(self.model.mass(state), (7, 7))
-
-    def get_jacobian(self, robot_state=None) -> np.ndarray:
-        state = self._require_cached_state() if robot_state is None else robot_state
-        return franka_array_to_matrix(self.model.zero_jacobian(state), (6, 7))
-
-    def find_error(self, current_pose, target_pose):
+    def task_error(self, current_pose, target_pose):
         """Compute controller-specific error between current and target pose."""
-        raise NotImplementedError("find_error is intentionally left unimplemented.")
+        raise NotImplementedError("task_error is intentionally left unimplemented.")
+    
+    def _motion_finished(self, error_norm) -> bool:
+        """Determine if motion is finished based on error norm and elapsed time."""
+        return error_norm < self.cfg.error_threshold or self.time_elapsed >= self.cfg.trajectory_duration
+    
+    def _joint_error(self, current_pose, target_pose):
+        """Compute 7-DOF joint position error."""
+        return target_pose - current_pose
 
-    def apply_torque_rate_limit(self, tau_desired: np.ndarray, tau_reference: np.ndarray) -> np.ndarray:
+    def apply_torque_rate_limit(self, tau_desired: np.ndarray) -> np.ndarray:
         """Apply per-joint torque rate limiting using configured max_delta_tau."""
-        return limit_torque_rate(tau_desired, tau_reference, self.max_delta_tau)
+        self._prev_value = np.zeros_like(self.robot_state.tau_J_d) if self._prev_value is None else self._prev_value
+        self._prev_value = limit_torque_rate(tau_desired, self._prev_value, self.max_delta_tau)
+        return self._prev_value
 
     def clip_torques(self, tau: np.ndarray) -> np.ndarray:
         """Clip torques using configured per-joint limits."""
         return np.clip(tau, -self.max_torques, self.max_torques)
-    
-    def control_loop(self):
-        """Main control loop to be implemented by subclasses."""
-        raise NotImplementedError("control_loop is intentionally left unimplemented.")
 
+    def write_command(self, command_value, motion_finished: bool = False):
+        """Write command to active control based on configured controller mode."""
+        mode = self.config.control_mode.strip().lower()
 
-# Backward-compatible alias for older imports.
-Controller = BaseController
+        if mode in ["torque", "osc"]:
+            values = np.asarray(command_value, dtype=float).tolist()
+            command = Torques(values)
+            command.motion_finished = motion_finished
+            self.active_control.writeOnce(command)
+            return command
+
+        if mode == "jpose":
+            raise NotImplementedError("write_command for jpose is not implemented yet.")
+        if mode == "jvel":
+            raise NotImplementedError("write_command for jvel is not implemented yet.")
+        if mode == "cpose":
+            raise NotImplementedError("write_command for cpose is not implemented yet.")
+        if mode == "cvel":
+            raise NotImplementedError("write_command for cvel is not implemented yet.")
+
+        raise ValueError(
+            f"Unsupported control_mode '{self.config.control_mode}' in write_command."
+        )
