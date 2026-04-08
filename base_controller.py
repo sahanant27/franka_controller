@@ -107,6 +107,11 @@ class BaseController:
         return franka_array_to_matrix(self.model.mass(self.robot_state), (7, 7))
 
     @property
+    def _coriolis(self):
+        """Return 7-DOF Coriolis forces."""
+        return np.array(self.model.coriolis(self.robot_state))
+    
+    @property
     def _jacobian(self):
         """Return 6x7 end-effector Jacobian in base frame."""
         return franka_array_to_matrix(self.model.zero_jacobian(self.robot_state), (6, 7))
