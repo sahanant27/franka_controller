@@ -5,7 +5,7 @@ import numpy as np
 
 from pylibfranka import  RealtimeConfig, Robot, Torques
 
-from utils import compute_pose_error, create_target_frame_translation_only
+from utils import compute_pose_error, create_frame_from_xyzrpy
 
 def rot_matrix_to_axis_angle(R):
     angle = np.arccos(np.clip((np.trace(R) - 1) / 2, -1.0, 1.0))
@@ -79,8 +79,7 @@ def main():
             initial_cartesian_pose[2, 3]          # z (unchanged)
         ])
 
-        target_frame = initial_cartesian_pose.copy()
-        target_frame[0:3, 3] = target_position
+        target_frame = create_frame_from_xyzrpy(xyz=target_position)
         
         # Motion and damping gains
         base_gains = np.array([150.0, 150.0, 150.0, 50.0, 50.0, 50.0])

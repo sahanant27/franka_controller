@@ -1,4 +1,4 @@
-from .motion import SimpleMotionGenerator, goto_pose
+from .motion import CartesianTargetPlanner, SimpleMotionGenerator, goto_pose
 from .control import (
 	franka_array_to_matrix,
 	limit_torque_rate,
@@ -8,10 +8,7 @@ from .control import (
 from .transforms import (
 	axis_angle_to_rot_matrix,
 	compute_pose_error,
-	create_delta_frame_rotation_axis,
-	create_delta_frame_translation_axis,
-	create_target_frame_translation_only,
-	matrix_to_quaternion,
+	create_frame_from_xyzrpy,
 	matrix_to_rpy,
 	rot_matrix_to_axis_angle,
 	slerp_rot_matrix,
@@ -19,16 +16,14 @@ from .transforms import (
 
 __all__ = [
 	"SimpleMotionGenerator",
+	"CartesianTargetPlanner",
 	"goto_pose",
 	"franka_array_to_matrix",
 	"limit_torque_rate",
 	"pose_error_norms",
 	"log_pose_error",
+	"create_frame_from_xyzrpy",
 	"matrix_to_rpy",
-	"matrix_to_quaternion",
-	"create_target_frame_translation_only",
-	"create_delta_frame_translation_axis",
-	"create_delta_frame_rotation_axis",
 	"rot_matrix_to_axis_angle",
 	"axis_angle_to_rot_matrix",
 	"slerp_rot_matrix",

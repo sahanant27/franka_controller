@@ -5,7 +5,8 @@ from typing import Sequence
 import numpy as np
 
 from base_controller import BaseController, ControllerConfig
-from utils.transforms import compute_pose_error
+from utils.motion import CartesianTargetPlanner
+from utils.transforms import compute_pose_error, create_frame_from_xyzrpy
 
 
 @dataclass
@@ -16,7 +17,7 @@ class OperationSpaceCfg:
     trajectory_duration: float = 15.0
     error_threshold: float = 1e-3
     base_gains: Sequence[float] = (150.0, 150.0, 150.0, 50.0, 50.0, 50.0)
-    goto_pose : bool = False
+    planner_duration: float = 3.0
 
 
 class OperationSpaceController(BaseController):
@@ -26,71 +27,70 @@ class OperationSpaceController(BaseController):
 
         self._motion_gains = np.array(self.cfg.base_gains)
         self._damping_gains = 2.0 * np.sqrt(self._motion_gains)
-        self._target_frame = None
+        self._target_planner = CartesianTargetPlanner(default_duration=self.cfg.planner_duration)
+        self._planned_target = None
         self.time_elapsed = 0.0
         self.motion_finished = False
-
-    def set_target(self, target_pose: np.ndarray) -> None:
-        self._target_frame = target_pose
 
     def task_error(self, current_pose, target_pose):
         return compute_pose_error(current_pose, target_pose)
 
-    def _compute_torque(self) -> np.ndarray:
-        m = self._mass_matrix.copy()
-        j = self._jacobian.copy()
-        current_pose = self._cartesian_pose.copy()
-        dq = self.robot_state.dq
-        eef_velocity = j @ dq
+    def set_target(self, abs_target=None, delta_target=None, duration=None) -> np.ndarray:
+        self._update_state()
+        goal_pose = self._target_planner.set_goal(
+            current_pose=self._cartesian_pose,
+            abs_target=abs_target,
+            delta_target=delta_target,
+            duration=duration,
+        )
+        self._planned_target = self._target_planner.current_target.copy()
+        self.motion_finished = False
+        self.time_elapsed = 0.0
+        return goal_pose
 
-        error_6d = self.task_error(current_pose, self._target_frame)
+    def _compute_torque(self) -> np.ndarray:
+        if self._planned_target is None:
+            raise ValueError("Target is not set. Call set_target(...) before running control.")
+
+        mass_matrix = self._mass_matrix.copy()
+        jacobian = self._jacobian.copy()
+        current_pose = self._cartesian_pose.copy()
+        dq = np.array(self.robot_state.dq)
+        eef_velocity = jacobian @ dq
+
+        error_6d = self.task_error(current_pose, self._planned_target)
         des_acc = self._motion_gains * error_6d - self._damping_gains * eef_velocity
 
-        m_inv = np.linalg.inv(m)
-        lambda_inv = j @ m_inv @ j.T
-        tau_d = j.T @ np.linalg.inv(lambda_inv) @ des_acc
+        mass_matrix_inv = np.linalg.inv(mass_matrix)
+        lambda_inv = jacobian @ mass_matrix_inv @ jacobian.T
+        tau_d = jacobian.T @ np.linalg.inv(lambda_inv) @ des_acc
 
         tau_d = self.apply_torque_rate_limit(tau_d)
         tau_d = self.clip_torques(tau_d)
         return tau_d
 
     def _control_step(self) -> None:
-        if self._target_frame is None:
-            raise ValueError("Target is not set. Call set_target(target_pose) before run().")
+        if self._target_planner.current_target is None:
+            raise ValueError("Planner has no target. Call set_target(...) before run().")
 
+        self._update_state()
         self.time_elapsed += self.duration.to_sec()
-        tau_d = self._compute_torque()
+        self._planned_target = self._target_planner.step(self.duration.to_sec())
 
-        current_pose = self._cartesian_pose.copy()
-        final_error_6d = self.task_error(current_pose, self._target_frame)
+        tau_d = self._compute_torque()
+        final_error_6d = self.task_error(self._cartesian_pose, self._target_planner.goal_pose)
         final_error_norm = np.linalg.norm(final_error_6d)
 
-        self.motion_finished = self._motion_finished(final_error_norm)
+        planner_finished = self._target_planner.is_finished()
+        self.motion_finished = planner_finished and self._motion_finished(final_error_norm)
         self.write_command(tau_d, motion_finished=self.motion_finished)
 
-    def _should_continue_control(self, decimation_step: int, decimation: int) -> bool:
-        if self.cfg.goto_pose:
-            return not self.motion_finished
-        return decimation_step < decimation
-
-    def step(self, action, decimation: int = 1):
-        if not self.cfg.goto_pose and decimation <= 0:
-            raise ValueError("decimation must be a positive integer when goto_pose is False.")
-
-        self.motion_finished = False
-        self.time_elapsed = 0.0
-        self.set_target(action)
-        self._update_state()
-
-        decimation_step = 0
-        while self._should_continue_control(decimation_step, decimation):
-            if decimation_step > 0:
-                self._update_state()
+    def run(self, abs_target=None, delta_target=None, duration=None) -> np.ndarray:
+        goal_pose = self.set_target(abs_target=abs_target, delta_target=delta_target, duration=duration)
+        while not self.motion_finished:
             self._control_step()
-            decimation_step += 1
+        return goal_pose
 
-    def run(self, target_pose: np.ndarray, decimation: int = 1) -> None:
-        self.step(target_pose, decimation=decimation)
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -98,17 +98,14 @@ def main() -> int:
     parser.add_argument("--dx", type=float, default=0.10, help="X translation offset in meters")
     parser.add_argument("--dy", type=float, default=0.0, help="Y translation offset in meters")
     parser.add_argument("--dz", type=float, default=0.0, help="Z translation offset in meters")
+    parser.add_argument("--duration", type=float, default=None, help="Optional target interpolation duration")
     args = parser.parse_args()
 
     controller = None
     try:
         controller = OperationSpaceController(args.ip, OperationSpaceCfg())
-        controller._update_state()
-        target_pose = controller._cartesian_pose.copy()
-        target_pose[0, 3] += args.dx
-        target_pose[1, 3] += args.dy
-        target_pose[2, 3] += args.dz
-        controller.run(target_pose)
+        delta_target = create_frame_from_xyzrpy(xyz=(args.dx, args.dy, args.dz))
+        controller.run(delta_target=delta_target, duration=args.duration)
     except Exception as exc:
         print(f"Error occurred: {exc}")
         if controller is not None:

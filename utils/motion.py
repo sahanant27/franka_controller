@@ -4,6 +4,8 @@ import time
 import numpy as np
 from pylibfranka import Robot, Torques
 
+from .transforms import slerp_rot_matrix
+
 
 class SimpleMotionGenerator:
     """Simple minimum jerk trajectory generator for smooth joint motion."""
@@ -46,6 +48,74 @@ class SimpleMotionGenerator:
     def _minimum_jerk(self, t):
         """Minimum jerk trajectory profile (normalized [0,1])."""
         return 10 * (t**3) - 15 * (t**4) + 6 * (t**5)
+
+
+class CartesianTargetPlanner:
+    """Reusable Cartesian target planner for absolute and delta pose goals."""
+
+    def __init__(self, default_duration=3.0):
+        self.default_duration = float(default_duration)
+        self.reset()
+
+    def reset(self):
+        self.start_pose = None
+        self.goal_pose = None
+        self.current_target = None
+        self.duration = self.default_duration
+        self.elapsed = 0.0
+        self.active = False
+
+    def set_goal(self, current_pose, abs_target=None, delta_target=None, duration=None):
+        if (abs_target is None) == (delta_target is None):
+            raise ValueError("Exactly one of abs_target or delta_target must be provided.")
+
+        self.start_pose = np.array(current_pose, copy=True)
+        # NOTE: Do we give this the autonoy or the target?? should be just the target i feel.
+        self.goal_pose = (
+            np.array(abs_target, copy=True)
+            if abs_target is not None
+            else self.start_pose @ np.array(delta_target, copy=True)
+        )
+        self.current_target = self.start_pose.copy()
+        self.duration = self.default_duration if duration is None else float(duration)
+        self.duration = max(self.duration, 1e-6)
+        self.elapsed = 0.0
+        self.active = True
+        return self.goal_pose
+
+    def is_finished(self):
+        return not self.active
+    
+    #NOTE: What is this used for???? 
+    def _minimum_jerk(self, t):
+        t = np.clip(t, 0.0, 1.0)
+        return 10 * (t**3) - 15 * (t**4) + 6 * (t**5)
+
+    def step(self, dt):
+        if self.current_target is None:
+            raise ValueError("Planner has no goal. Call set_goal(...) first.")
+        if not self.active:
+            return self.goal_pose.copy()
+
+        self.elapsed = min(self.elapsed + float(dt), self.duration)
+        fraction = self._minimum_jerk(self.elapsed / self.duration)
+
+        target = np.eye(4)
+        target[:3, 3] = self.start_pose[:3, 3] + fraction * (
+            self.goal_pose[:3, 3] - self.start_pose[:3, 3]
+        )
+        target[:3, :3] = slerp_rot_matrix(
+            self.start_pose[:3, :3],
+            self.goal_pose[:3, :3],
+            fraction,
+        )
+
+        self.current_target = target
+        if self.elapsed >= self.duration:
+            self.active = False
+            self.current_target = self.goal_pose.copy()
+
+        return self.current_target.copy()
 
 
 

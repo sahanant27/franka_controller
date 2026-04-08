@@ -42,17 +42,17 @@ class BaseController:
         self.robot = Robot(robot_ip, self.config.realtime_config)
         self.max_torques = np.array(self.config.max_torques)
         self.max_delta_tau = float(self.config.max_delta_tau)
+        self.robot_state = None
+        self.duration = None
+        self._prev_value = None
 
         self._set_collision_behavior()
-        self.active_control = self._start_active_control(self.config.control_mode)
-        self.model = self.robot.load_model()
 
         if self.config.auto_goto_home:
             self.goto_home()
 
-        self.robot_state = None
-        self.duration = None
-        self._prev_value = None
+        self.active_control = self._start_active_control(self.config.control_mode)
+        self.model = self.robot.load_model()
 
     def _set_collision_behavior(self) -> None:
         self.robot.set_collision_behavior(
