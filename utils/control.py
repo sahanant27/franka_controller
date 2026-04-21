@@ -21,13 +21,16 @@ def pose_error_norms(error_6d):
     return trans_norm, rot_norm, total_norm
 
 
-def log_pose_error(label, norms, time_elapsed=None):
+def log_pose_error(label, norms, time_elapsed=None, include_total=True):
     """Print a formatted pose-error line."""
     trans_norm, rot_norm, total_norm = norms
-    message = (
-        f"{label}: total={total_norm:.6f}, "
-        f"translation={trans_norm:.6f} m, rotation={rot_norm:.6f} rad"
-    )
+    if include_total:
+        message = (
+            f"{label}: total={total_norm:.6f}, "
+            f"translation={trans_norm:.6f} m, rotation={rot_norm:.6f} rad"
+        )
+    else:
+        message = f"{label}: translation={trans_norm:.6f} m, rotation={rot_norm:.6f} rad"
     if time_elapsed is not None:
         message = f"t={time_elapsed:.2f}s | {message}"
     print(message)

@@ -164,6 +164,6 @@ def compute_pose_error(current_pose, target_pose):
     if np.dot(q_target, q_current) < 0.0:
         q_current = -q_current
 
-    error_quaternion = _quat_multiply(_quat_conjugate(q_current), q_target)
+    error_quaternion = _quat_multiply(_quat_conjugate(q_target), q_current)
     orientation_error = -current_rotation @ error_quaternion[1:]
     return np.concatenate([position_error, orientation_error])

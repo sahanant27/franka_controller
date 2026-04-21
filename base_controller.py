@@ -14,7 +14,7 @@ class ControllerConfig:
     """Single configuration object used to initialize a controller instance."""
 
     control_mode: str = "jpose"
-    realtime_config: RealtimeConfig = RealtimeConfig.kIgnore
+    realtime_config: RealtimeConfig = RealtimeConfig.kIgnore # kIgnore | kEnforce
     auto_goto_home: bool = True
     lower_torque_thresholds: Sequence[float] = field(
         default_factory=lambda: (20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0)
@@ -42,6 +42,17 @@ class BaseController:
         self.robot = Robot(robot_ip, self.config.realtime_config)
         self.max_torques = np.array(self.config.max_torques)
         self.max_delta_tau = float(self.config.max_delta_tau)
+        residual_mass_vec = getattr(self, "cfg", None)
+        residual_mass_vec = getattr(residual_mass_vec, "residual_mass_vec", None)
+        if residual_mass_vec is None:
+            self.residual_mass_matrix = np.zeros((7, 7))
+        else:
+            residual_mass_vec = np.asarray(residual_mass_vec, dtype=float)
+            if residual_mass_vec.shape != (7,):
+                raise ValueError(
+                    "residual_mass_vec must contain 7 values for the Panda joint-space mass matrix."
+                )
+            self.residual_mass_matrix = np.diag(residual_mass_vec)
         self.robot_state = None
         self.duration = None
 
@@ -102,8 +113,9 @@ class BaseController:
 
     @property
     def _mass_matrix(self):
-        """Return 7x7 joint-space mass matrix."""
-        return franka_array_to_matrix(self.model.mass(self.robot_state), (7, 7))
+        """Return 7x7 joint-space mass matrix including any configured residual term."""
+        mass_matrix = franka_array_to_matrix(self.model.mass(self.robot_state), (7, 7))
+        return mass_matrix + self.residual_mass_matrix
 
     @property
     def _coriolis(self):
