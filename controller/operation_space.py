@@ -4,7 +4,7 @@ from typing import Sequence
 
 import numpy as np
 
-from base_controller import BaseController, ControllerConfig
+from controller.base_controller import BaseController, ControllerConfig
 from utils.control import log_pose_error, pose_error_norms
 from utils.motion import CartesianTargetPlanner
 from utils.transforms import compute_pose_error, create_frame_from_xyzrpy
