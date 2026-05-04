@@ -26,7 +26,8 @@ class OperationSpaceCfg:
         default_factory=lambda: ControllerConfig(control_mode="torque", auto_goto_home=True)
     )
     trajectory_duration: float = 8.0
-    error_threshold: float = 1e-3
+    translation_error_threshold: float = 5e-3
+    rotation_error_threshold: float = 1e-2
     base_gains: Sequence[float] = (30.0, 30.0, 30.0, 60.0, 60.0, 60.0)
     residual_mass_vec: Sequence[float] = (0.0, 0.0, 0.0, 0.0, 0.1, 0.5, 0.5)
     planner_duration: float = 3.0
@@ -57,6 +58,13 @@ class OperationSpaceController(BaseController):
 
     def task_error(self, current_pose, target_pose):
         return compute_pose_error(current_pose, target_pose)
+
+    def _goal_reached(self, error_6d: np.ndarray) -> bool:
+        translation_error, rotation_error, _ = pose_error_norms(error_6d)
+        return (
+            translation_error < self.cfg.translation_error_threshold
+            and rotation_error < self.cfg.rotation_error_threshold
+        )
 
     def set_target(self, abs_target=None, delta_target=None, duration=None) -> np.ndarray:
         self._update_state()
@@ -144,11 +152,10 @@ class OperationSpaceController(BaseController):
         planned_error_6d = self.task_error(self._cartesian_pose, self._planned_target)
         final_error_6d = self.task_error(self._cartesian_pose, self._target_planner.goal_pose)
         planned_norms = pose_error_norms(planned_error_6d)
-        final_error_norm = np.linalg.norm(final_error_6d)
         final_norms = pose_error_norms(final_error_6d)
 
         planner_finished = self._target_planner.is_finished()
-        reached_goal = planner_finished and final_error_norm < self.cfg.error_threshold
+        reached_goal = planner_finished and self._goal_reached(final_error_6d)
         self._timed_out = self.time_elapsed >= self.cfg.trajectory_duration
         self.motion_finished = reached_goal or self._timed_out
 
