@@ -1,6 +1,16 @@
 import numpy as np
 
 
+def pseudoinverse(matrix: np.ndarray, epsilon: float = 2.5e-4) -> np.ndarray:
+    """SVD-based pseudoinverse with fixed singular-value cutoff (matches Deoxys)."""
+    u, sv, vh = np.linalg.svd(matrix, full_matrices=True)
+    sv_inv = np.zeros(matrix.shape, dtype=float)
+    for i, s in enumerate(sv):
+        if s >= epsilon:
+            sv_inv[i, i] = 1.0 / s
+    return vh.T @ sv_inv @ u.T
+
+
 def franka_array_to_matrix(values, shape):
     """Convert Franka column-major array data to a matrix."""
     return np.array(values).reshape(*shape, order="F")

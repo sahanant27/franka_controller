@@ -5,19 +5,9 @@ from typing import Sequence
 import numpy as np
 
 from controller.base_controller import BaseController, ControllerConfig
-from utils.control import log_pose_error, pose_error_norms
+from utils.control import log_pose_error, pose_error_norms, pseudoinverse
 from utils.motion import CartesianTargetPlanner
 from utils.transforms import compute_pose_error, create_frame_from_xyzrpy
-
-
-def pseudoinverse(matrix: np.ndarray, epsilon: float = 2.5e-4) -> np.ndarray:
-    """Match the Deoxys SVD-based pseudoinverse with a fixed singular-value cutoff."""
-    u, singular_values, vh = np.linalg.svd(matrix, full_matrices=True)
-    singular_values_inv = np.zeros(matrix.shape, dtype=float)
-    for i, singular_value in enumerate(singular_values):
-        if singular_value >= epsilon:
-            singular_values_inv[i, i] = 1.0 / singular_value
-    return vh.T @ singular_values_inv @ u.T
 
 
 @dataclass

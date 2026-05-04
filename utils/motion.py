@@ -118,6 +118,53 @@ class CartesianTargetPlanner:
         return self.current_target.copy()
 
 
+class JointTargetPlanner:
+    """Minimum-jerk joint-space target planner. Mirrors CartesianTargetPlanner interface."""
+
+    def __init__(self, default_duration: float = 3.0):
+        self.default_duration = float(default_duration)
+        self.reset()
+
+    def reset(self):
+        self.start_q = None
+        self.goal_q = None
+        self.current_target = None
+        self.duration = self.default_duration
+        self.elapsed = 0.0
+        self.active = False
+
+    def set_goal(self, current_q, target_q, duration=None):
+        self.start_q = np.array(current_q, copy=True)
+        self.goal_q = np.array(target_q, copy=True)
+        self.current_target = self.start_q.copy()
+        self.duration = self.default_duration if duration is None else float(duration)
+        self.duration = max(self.duration, 1e-6)
+        self.elapsed = 0.0
+        self.active = True
+        return self.goal_q
+
+    def is_finished(self):
+        return not self.active
+
+    def _minimum_jerk(self, t):
+        t = np.clip(t, 0.0, 1.0)
+        return 10 * (t**3) - 15 * (t**4) + 6 * (t**5)
+
+    def step(self, dt):
+        if self.current_target is None:
+            raise ValueError("Planner has no goal. Call set_goal(...) first.")
+        if not self.active:
+            return self.goal_q.copy()
+
+        self.elapsed = min(self.elapsed + float(dt), self.duration)
+        fraction = self._minimum_jerk(self.elapsed / self.duration)
+        self.current_target = self.start_q + fraction * (self.goal_q - self.start_q)
+
+        if self.elapsed >= self.duration:
+            self.active = False
+            self.current_target = self.goal_q.copy()
+
+        return self.current_target.copy()
 
 
 
