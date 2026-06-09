@@ -2,14 +2,15 @@
 """STEP 1 — minimal async joint-position move (the API that ROS uses, which our
 old joint-pose control was missing).
 
-Goal of this step: confirm AsyncPositionControlHandler actually moves the arm,
-and observe what get_target_feedback().status reports (we don't know its values
-yet — this prints them so Step 2 can detect "reached" correctly).
+Goal of this step: confirm AsyncPositionControlHandler actually moves the arm.
+Completion is detected by polling joint positions, not get_target_feedback().status:
+the installed pylibfranka never registered the franka::TargetStatus enum with
+pybind11, so reading .status raises "TypeError: Unregistered type".
 
 SAFETY: moves ONE joint a small amount, slowly. Clear the workspace, keep the
 e-stop in hand. Run on the ROBOT PC (in the pylibfranka env).
 
-    python step1_async_joint_move.py --ip 172.16.0.2 --joint 6 --delta 0.2
+    python async_joint_move.py --ip 172.16.0.2 --joint 6 --delta 0.2
 """
 import argparse
 import time
@@ -55,7 +56,8 @@ def main():
 
     dt = 1.0 / args.hz   # command period; example uses 50 Hz, your policy may be 10 Hz
     t0 = time.monotonic()
-    last_status = "<none>"
+    last_err = "<none>"
+    # Completion is polled from q (see module docstring re: unusable fb.status).
     try:
         while time.monotonic() - t0 < args.duration:
             loop = time.monotonic()
@@ -64,10 +66,13 @@ def main():
                 print(f"set_target error: {cmd.error_message}")
                 break
             fb = handler.get_target_feedback()
-            if repr(fb.status) != last_status:        # print status only when it changes
-                last_status = repr(fb.status)
-                print(f"  t={time.monotonic()-t0:4.1f}s  status={fb.status!r}  "
-                      f"err={fb.error_message!r}")
+            if fb.error_message != last_err:          # print only when it changes
+                last_err = fb.error_message
+                print(f"  t={time.monotonic()-t0:4.1f}s  err={fb.error_message!r}")
+            q = np.array(robot.read_once().q)
+            if np.max(np.abs(q - target)) <= args.tol:
+                print(f"  t={time.monotonic()-t0:4.1f}s  reached (within {args.tol} rad)")
+                break
             sleep = dt - (time.monotonic() - loop)
             if sleep > 0:
                 time.sleep(sleep)
