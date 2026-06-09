@@ -17,6 +17,7 @@ CLI self-test (ROBOT PC, e-stop in hand):
     python joint_position_controller.py --ip 172.16.0.2 --joint 6 --delta 0.2 --hz 10
 """
 import argparse
+import threading
 import time
 
 import numpy as np
@@ -71,16 +72,6 @@ class JointPositionController:
     def set_target(self, q):
         """Non-blocking: command one (clamped) joint target. Returns the sent target."""
         # ------------------------------------------------------------------
-        # OPEN QUESTION (decide before the zmq hook):
-        #   Does a single set_target hold control BETWEEN commands? The policy
-        #   will call this at ~10 Hz (100 ms gaps). If the handler times out
-        #   without continuous targets, the zmq server needs a background
-        #   "feeder" thread re-sending the latest target at ~50 Hz while the
-        #   policy updates it at 10 Hz.
-        #   TEST: after a move_to(), call set_target() ONCE and wait a few sec.
-        #     - arm holds            -> single-shot is fine, no feeder thread
-        #     - control drops/errors -> add the feeder thread in the zmq server
-        # ------------------------------------------------------------------
         q = self._clamp(q)
         tgt = franka.AsyncPositionControlHandler.JointPositionTarget(joint_positions=q.tolist())
         cmd = self.handler.set_joint_position_target(tgt)
@@ -108,6 +99,80 @@ class JointPositionController:
 
     def stop(self):
         self.handler.stop_control()
+
+
+class TargetStreamer:
+    """50 Hz feeder thread for streaming / policy control (SKETCH — untested on hw).
+
+    Why this exists (libfranka source trace): set_target sends ONE UDP packet and
+    libfranka never repeats it. The robot firmware drives toward the last target,
+    but the reference design streams at 50 Hz and a 10 Hz policy is far sparser
+    than anything Franka validates. So we re-send the latest target at a steady
+    50 Hz here, while the policy updates that target at 10 Hz.
+
+    This thread is the ONLY one that touches the robot (set_target + read_state);
+    callers use update_target()/get_state() through a lock — mirroring the
+    franka_zmq_server shared-state pattern. Intended to back the zmq server:
+        get_state  -> streamer.get_state()
+        set_target -> streamer.update_target(q)
+    """
+
+    def __init__(self, controller: JointPositionController, rate_hz=50.0):
+        self.ctrl = controller
+        self.dt = 1.0 / rate_hz
+        self._lock = threading.Lock()
+        q, dq, T = controller.read_state()
+        self._target = q.copy()                  # start by holding the current pose
+        self._state = {"q": q, "dq": dq, "T_base_ee": T}
+        self._running = False
+        self._thread = None
+        self._error = None                       # control error surfaced from the thread
+
+    def update_target(self, q):
+        """Thread-safe: set the latest joint target (policy calls this ~10 Hz)."""
+        q = np.asarray(q, dtype=float)
+        if q.shape != (7,):
+            raise ValueError(f"target must have 7 elements, got {q.shape}")
+        with self._lock:
+            self._target = q.copy()
+
+    def get_state(self):
+        """Thread-safe snapshot: {'q','dq','T_base_ee'} (+ 'error' if the loop died)."""
+        with self._lock:
+            snap = dict(self._state)
+            if self._error:
+                snap["error"] = self._error
+            return snap
+
+    def _loop(self):
+        # Top-level thread boundary: record control errors instead of dying silently.
+        try:
+            while self._running:
+                t = time.monotonic()
+                with self._lock:
+                    tgt = self._target.copy()
+                self.ctrl.set_target(tgt)        # the re-sent UDP packet (keeps control alive)
+                q, dq, T = self.ctrl.read_state()
+                with self._lock:
+                    self._state = {"q": q, "dq": dq, "T_base_ee": T}
+                sleep = self.dt - (time.monotonic() - t)
+                if sleep > 0:
+                    time.sleep(sleep)
+        except Exception as e:
+            with self._lock:
+                self._error = str(e)
+            self._running = False
+
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="target_streamer")
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self.ctrl.stop()                         # release async control
 
 
 def main():
