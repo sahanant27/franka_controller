@@ -9,7 +9,7 @@ re-sends the latest target at 50 Hz. If the arm tracks the target here, the
 Run franka_server.py first, then this. Start on the ROBOT PC (localhost) to
 de-risk, then re-run from the PERCEPTION PC with --addr tcp://10.42.0.1:5556.
 
-  python validate_streamer.py --addr tcp://127.0.0.1:5556 --joint 6 --delta 0.2 --hz 10
+  python tools/validate_streamer.py --addr tcp://127.0.0.1:5556 --joint 6 --delta 0.2 --hz 10
 """
 import argparse
 import time

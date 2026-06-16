@@ -20,7 +20,7 @@ CONVENTIONS TO CONFIRM (must match your policy's training):
      them to gain ranges BEFORE set_action (or add a mapping here).
 
 Run on the ROBOT PC (pylibfranka env), e-stop in hand:
-    python joint_impedance_controller.py --ip 172.16.0.2 --joint 6 --dq 0.1
+    python controllers/joint_impedance_controller.py --ip 172.16.0.2 --joint 6 --dq 0.1
 """
 import argparse
 import threading

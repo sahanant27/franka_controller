@@ -10,7 +10,7 @@ pybind11, so reading .status raises "TypeError: Unregistered type".
 SAFETY: moves ONE joint a small amount, slowly. Clear the workspace, keep the
 e-stop in hand. Run on the ROBOT PC (in the pylibfranka env).
 
-    python async_joint_move.py --ip 172.16.0.2 --joint 6 --delta 0.2
+    python tools/async_joint_move.py --ip 172.16.0.2 --joint 6 --delta 0.2
 """
 import argparse
 import time

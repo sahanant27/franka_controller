@@ -11,17 +11,20 @@ It tracks an absolute target by sending Δq = target - q_measured each step:
   sine : target = q_start, one joint += amp*sin(2*pi*freq*t)  -> smooth oscillation.
 
 Run on the ROBOT PC, e-stop in hand:
-  python drive_impedance.py --ip 172.16.0.2 --mode hold
-  python drive_impedance.py --ip 172.16.0.2 --mode sine --joint 6 --amp 0.15 --freq 0.2
+  python tools/drive_impedance.py --ip 172.16.0.2 --mode hold
+  python tools/drive_impedance.py --ip 172.16.0.2 --mode sine --joint 6 --amp 0.15 --freq 0.2
 """
 import argparse
 import math
+import os
+import sys
 import time
 
 import numpy as np
 import pylibfranka as franka
 
-from joint_impedance_controller import JointImpedanceController, DEFAULT_KP, DEFAULT_KD
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
+from controllers.joint_impedance_controller import JointImpedanceController, DEFAULT_KP, DEFAULT_KD
 
 
 def main():

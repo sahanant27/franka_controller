@@ -14,10 +14,12 @@ Protocol (zmq REQ/REP):
   {"cmd":"get_state"}         -> {"ok":true,"q":[7],"dq":[7],"ee_pose":[[4]x4],"controlling":bool}
   {"cmd":"move_to","q":[7]}   -> {"ok":true,"reached":bool,"q":[7]}   (replay only)
 
-  python calib_server.py --mode teach  --ip 172.16.0.2 --bind tcp://0.0.0.0:5556
-  python calib_server.py --mode replay --ip 172.16.0.2 --bind tcp://0.0.0.0:5556
+  python servers/calib_server.py --mode teach  --ip 172.16.0.2 --bind tcp://0.0.0.0:5556
+  python servers/calib_server.py --mode replay --ip 172.16.0.2 --bind tcp://0.0.0.0:5556
 """
 import argparse
+import os
+import sys
 import time
 import traceback
 
@@ -25,7 +27,8 @@ import numpy as np
 import zmq
 import pylibfranka as franka
 
-from joint_position_controller import JointPositionController, TargetStreamer
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
+from controllers.joint_position_controller import JointPositionController, TargetStreamer
 
 
 def main():

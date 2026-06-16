@@ -14,7 +14,7 @@ Two ways to command:
   - set_target(q): non-blocking single command (streaming / policy / zmq).
 
 CLI self-test (ROBOT PC, e-stop in hand):
-    python joint_position_controller.py --ip 172.16.0.2 --joint 6 --delta 0.2 --hz 10
+    python controllers/joint_position_controller.py --ip 172.16.0.2 --joint 6 --delta 0.2 --hz 10
 """
 import argparse
 import threading

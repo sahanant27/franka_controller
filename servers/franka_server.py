@@ -12,15 +12,18 @@ Protocol (JSON over zmq REQ/REP):
   {"cmd":"set_target","q":[7]}  -> {"ok":true}     (updates the streamed target)
 
 Run on the ROBOT PC (e-stop in hand — the arm becomes live on startup):
-  python franka_server.py --ip 172.16.0.2 --bind tcp://0.0.0.0:5556
+  python servers/franka_server.py --ip 172.16.0.2 --bind tcp://0.0.0.0:5556
 """
 import argparse
+import os
+import sys
 import traceback
 
 import zmq
 import pylibfranka as franka
 
-from joint_position_controller import JointPositionController, TargetStreamer
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
+from controllers.joint_position_controller import JointPositionController, TargetStreamer
 
 
 def handle(req, streamer):

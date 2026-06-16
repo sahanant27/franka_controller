@@ -10,7 +10,7 @@ This script NEVER controls the robot -- it only calls read_once() -- so it does
 not fight guiding mode. Turn franka_server.py back ON afterwards for the
 replay + capture step.
 
-  python record_poses.py --ip 172.16.0.2 --out handeye_poses.json
+  python tools/record_poses.py --ip 172.16.0.2 --out handeye_poses.json
 """
 import argparse
 import json

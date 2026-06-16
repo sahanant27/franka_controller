@@ -11,15 +11,18 @@ Protocol (zmq REQ/REP):
   {"cmd":"set_action","a":[21]}  -> {"ok":true}      (a = [Δq(7), Kp(7), Kd(7)])
 
 Run on the ROBOT PC (e-stop in hand — the arm becomes live on startup):
-  python impedance_server.py --ip 172.16.0.2 --bind tcp://0.0.0.0:5556 --max-dq 0.5
+  python servers/impedance_server.py --ip 172.16.0.2 --bind tcp://0.0.0.0:5556 --max-dq 0.5
 """
 import argparse
+import os
+import sys
 import traceback
 
 import zmq
 import pylibfranka as franka
 
-from joint_impedance_controller import JointImpedanceController
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
+from controllers.joint_impedance_controller import JointImpedanceController
 
 
 def main():
