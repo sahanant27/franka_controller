@@ -30,8 +30,9 @@ def handle(req, streamer):
     if cmd == "get_state":
         s = streamer.get_state()
         rep = {"ok": True, "q": s["q"].tolist(), "dq": s["dq"].tolist(),
-               "ee_pose": s["T_base_ee"].tolist()}
-        if "error" in s:                      # streamer/control thread died
+               "ee_pose": s["T_base_ee"].tolist(),
+               "controlling": s["controlling"]}   # False in programming/guiding mode
+        if "error" in s:                          # the state-READ loop died (state is stale)
             rep["ok"] = False
             rep["error"] = f"streamer error: {s['error']}"
         return rep

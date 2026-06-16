@@ -102,7 +102,7 @@ class JointPositionController:
 
 
 class TargetStreamer:
-    """50 Hz feeder thread for streaming / policy control (SKETCH — untested on hw).
+    """50 Hz feeder thread for streaming / policy control (50 Hz feeder validated on hw).
 
     Why this exists (libfranka source trace): set_target sends ONE UDP packet and
     libfranka never repeats it. The robot firmware drives toward the last target,
@@ -126,7 +126,8 @@ class TargetStreamer:
         self._state = {"q": q, "dq": dq, "T_base_ee": T}
         self._running = False
         self._thread = None
-        self._error = None                       # control error surfaced from the thread
+        self._error = None                       # FATAL: a read_state failure (state is stale)
+        self._controlling = False                # True only while writes (set_target) succeed
 
     def update_target(self, q):
         """Thread-safe: set the latest joint target (policy calls this ~10 Hz)."""
@@ -137,31 +138,43 @@ class TargetStreamer:
             self._target = q.copy()
 
     def get_state(self):
-        """Thread-safe snapshot: {'q','dq','T_base_ee'} (+ 'error' if the loop died)."""
+        """Snapshot: {'q','dq','T_base_ee','controlling'} (+ 'error' if reads died)."""
         with self._lock:
             snap = dict(self._state)
+            snap["controlling"] = self._controlling
             if self._error:
                 snap["error"] = self._error
             return snap
 
     def _loop(self):
-        # Top-level thread boundary: record control errors instead of dying silently.
-        try:
-            while self._running:
-                t = time.monotonic()
-                with self._lock:
-                    tgt = self._target.copy()
-                self.ctrl.set_target(tgt)        # the re-sent UDP packet (keeps control alive)
+        # Encoders are readable in execution AND programming/guiding mode; writes
+        # (set_target) only work in execution mode. So: ALWAYS read state (a read
+        # failure is fatal), and treat the write as best-effort -- a write failure
+        # means the robot is in programming mode (control released), which is normal
+        # during free-drive teaching, so it must NOT kill the state-read loop.
+        while self._running:
+            t = time.monotonic()
+            try:
                 q, dq, T = self.ctrl.read_state()
                 with self._lock:
                     self._state = {"q": q, "dq": dq, "T_base_ee": T}
-                sleep = self.dt - (time.monotonic() - t)
-                if sleep > 0:
-                    time.sleep(sleep)
-        except Exception as e:
+            except Exception as e:               # read failed -> state is stale, give up
+                with self._lock:
+                    self._error = str(e)
+                self._running = False
+                break
             with self._lock:
-                self._error = str(e)
-            self._running = False
+                tgt = self._target.copy()
+            try:
+                self.ctrl.set_target(tgt)        # write: only succeeds in execution mode
+                with self._lock:
+                    self._controlling = True
+            except Exception:                    # programming mode / control released
+                with self._lock:
+                    self._controlling = False
+            sleep = self.dt - (time.monotonic() - t)
+            if sleep > 0:
+                time.sleep(sleep)
 
     def start(self):
         self._running = True
