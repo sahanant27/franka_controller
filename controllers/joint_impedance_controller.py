@@ -10,14 +10,21 @@ Control law each tick (q, dq measured):
 The robot compensates gravity internally for torque control, so we add only
 coriolis (matches the franka examples).
 
-CONVENTIONS TO CONFIRM (must match your policy's training):
-  1. 21-D layout = [Δq(7), Kp(7), Kd(7)]. Third block is Kd (damping). If your
-     policy outputs Ki (integral) instead, this law changes — tell me.
-  2. Δq is relative to the MEASURED q at action time, latched until the next
-     action: q_ref = q_meas + Δq.  (set reference_mode="commanded" to integrate
-     deltas onto the previous target instead.)
-  3. Kp/Kd are RAW gains here. If your policy emits normalized actions, scale
-     them to gain ranges BEFORE set_action (or add a mapping here).
+TODO — apply before any manipulation-policy run. The training law is RESOLVED and the
+current code does NOT match it yet (sources agree: CORN pkm/scripts/real/controller.py:768,
+the IsaacLab trace in the policy bundle's control_law.py, and grasping_ws/scripts/robot/
+sim_impedance_ema.py):
+  [ ] 1. Kd is a COEFFICIENT on sqrt(Kp), not an absolute gain. In set_action:
+            self._kd = kd * np.sqrt(kp)          # currently: self._kd = kd.copy()
+         As-is, the policy's Kd in [0.3,2.0] is used as absolute -> the arm RINGS (sim-proven).
+  [ ] 2. PURE PD — drop coriolis to match training (the robot adds gravity in torque mode):
+            tau = kp*(q_ref - q) - kd*dq          # currently: ... + coriolis
+  [ ] 3. Clamp the latched q_ref to FR3 joint limits (safety; control_law.py does this).
+  [ ] 4. (grasp, later) gripper open/close via franka.Gripper — not implemented anywhere yet.
+  [ ] 5. (later) atomic position<->impedance mode switch for grasp <-> manipulation.
+
+Δq is relative to the MEASURED q at action time, latched until the next action
+(q_ref = q_meas + Δq; reference_mode="commanded" integrates onto the previous target instead).
 
 Run on the ROBOT PC (pylibfranka env), e-stop in hand:
     python controllers/joint_impedance_controller.py --ip 172.16.0.2 --joint 6 --dq 0.1
@@ -76,9 +83,9 @@ class JointImpedanceController:
             dq = np.clip(dq, -self.max_dq, self.max_dq)
         with self._lock:
             base = self._last_q if self.reference_mode == "measured" else self._q_ref
-            self._q_ref = base + dq                 # latch q_ref = base + Δq
+            self._q_ref = base + dq                 # latch q_ref = base + Δq  # TODO(3): clip to FR3 limits
             self._kp = kp.copy()
-            self._kd = kd.copy()
+            self._kd = kd.copy()                    # TODO(1): self._kd = kd * np.sqrt(kp)  (Kd = √Kp·action)
 
     def get_state(self):
         with self._lock:
@@ -101,7 +108,7 @@ class JointImpedanceController:
                     q_ref, kp, kd = self._q_ref.copy(), self._kp.copy(), self._kd.copy()
                     self._last_q, self._last_dq, self._ee = q, dq, ee
 
-                tau = kp * (q_ref - q) - kd * dq + coriolis
+                tau = kp * (q_ref - q) - kd * dq + coriolis   # TODO(2): drop coriolis -> pure PD (match training)
                 # safety: per-tick slew limit, then absolute clip
                 tau = self._prev_tau + np.clip(tau - self._prev_tau,
                                                -self.max_delta_tau, self.max_delta_tau)
