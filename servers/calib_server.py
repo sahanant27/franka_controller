@@ -20,6 +20,7 @@ Protocol (zmq REQ/REP):
 import argparse
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -29,6 +30,58 @@ import pylibfranka as franka
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
 from controllers.joint_position_controller import JointPositionController, TargetStreamer
+
+
+class StateReader:
+    """Read-only background reader for TEACH / free-drive mode.
+
+    read_once() can hand back a one-call-stale buffer; called sparsely (once per captured pose)
+    that became a full one-pose lag in hand-eye (the EE<->board off-by-one). A steady background
+    loop keeps the latest snapshot fresh (~ms), so get_state always returns the current pose.
+    Reads work in guiding/programming mode and need no controller, so free-drive is unaffected —
+    this is the read-only half of TargetStreamer."""
+
+    def __init__(self, robot, rate_hz=100.0):
+        self.robot = robot
+        self.dt = 1.0 / rate_hz
+        self._lock = threading.Lock()
+        self._state = None
+        self._running = False
+        self._thread = None
+
+    def _loop(self):
+        while self._running:
+            t = time.monotonic()
+            try:
+                s = self.robot.read_once()
+                T = np.array(s.O_T_EE).reshape(4, 4, order="F")
+                with self._lock:
+                    self._state = {"q": list(s.q), "dq": list(s.dq), "ee_pose": T.tolist()}
+            except Exception:
+                pass                                  # transient read hiccup; keep the last snapshot
+            sleep = self.dt - (time.monotonic() - t)
+            if sleep > 0:
+                time.sleep(sleep)
+
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="state_reader")
+        self._thread.start()
+        for _ in range(200):                          # wait up to ~2s for the first snapshot
+            with self._lock:
+                if self._state is not None:
+                    return
+            time.sleep(0.01)
+        raise RuntimeError("StateReader: no robot state within 2s")
+
+    def get_state(self):
+        with self._lock:
+            return {**self._state, "controlling": False}
+
+    def stop(self):
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
 
 
 def main():
@@ -43,6 +96,7 @@ def main():
 
     robot = franka.Robot(args.ip, franka.RealtimeConfig.kIgnore)
     streamer = None
+    reader = None
 
     if args.mode == "replay":
         ctrl = JointPositionController(robot, max_velocity=args.max_vel, goal_tolerance=args.tol)
@@ -67,13 +121,10 @@ def main():
                 time.sleep(0.02)
             return False, streamer.get_state()["q"].tolist()
     else:
-        print("TEACH mode: read-only. Free-drive the arm (guiding mode).")
-
-        def get_state():
-            s = robot.read_once()                                 # encoders only, no control
-            T = np.array(s.O_T_EE).reshape(4, 4, order="F")
-            return {"q": list(s.q), "dq": list(s.dq),
-                    "ee_pose": T.tolist(), "controlling": False}
+        print("TEACH mode: read-only, continuous reader. Free-drive the arm (guiding mode).")
+        reader = StateReader(robot)
+        reader.start()
+        get_state = reader.get_state                              # always the freshest snapshot
 
         def move_to(q):
             raise RuntimeError("move_to is only available in --mode replay")
@@ -113,6 +164,8 @@ def main():
     finally:
         if streamer is not None:
             streamer.stop()
+        if reader is not None:
+            reader.stop()
         sock.close(0)
         ctx.term()
 
