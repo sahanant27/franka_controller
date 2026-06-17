@@ -85,7 +85,10 @@ class JointImpedanceController:
             base = self._last_q if self.reference_mode == "measured" else self._q_ref
             self._q_ref = base + dq                 # latch q_ref = base + Δq  # TODO(3): clip to FR3 limits
             self._kp = kp.copy()
-            self._kd = kd.copy()                    # TODO(1): self._kd = kd * np.sqrt(kp)  (Kd = √Kp·action)
+            # self._kd = kd.copy()                    # TODO(1): self._kd = kd * np.sqrt(kp)  (Kd = √Kp·action)
+            self._kd = kd.copy() * np.sqrt(kp)  
+
+
 
     def get_state(self):
         with self._lock:
@@ -108,7 +111,9 @@ class JointImpedanceController:
                     q_ref, kp, kd = self._q_ref.copy(), self._kp.copy(), self._kd.copy()
                     self._last_q, self._last_dq, self._ee = q, dq, ee
 
-                tau = kp * (q_ref - q) - kd * dq + coriolis   # TODO(2): drop coriolis -> pure PD (match training)
+                # tau = kp * (q_ref - q) - kd * dq + coriolis   # TODO(2): drop coriolis -> pure PD (match training)
+                tau = kp * (q_ref - q) - kd * dq 
+
                 # safety: per-tick slew limit, then absolute clip
                 tau = self._prev_tau + np.clip(tau - self._prev_tau,
                                                -self.max_delta_tau, self.max_delta_tau)
