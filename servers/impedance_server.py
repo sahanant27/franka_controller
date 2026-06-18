@@ -9,6 +9,7 @@ Protocol (zmq REQ/REP):
   {"cmd":"ping"}                 -> {"ok":true}
   {"cmd":"get_state"}            -> {"ok":true,"q":[7],"dq":[7],"ee_pose":[[4]x4],"controlling":bool}
   {"cmd":"set_action","a":[21]}  -> {"ok":true}      (a = [Δq(7), Kp(7), Kd(7)])
+  {"cmd":"reset","gripper":"close"|"open"|"none"} -> {"ok":true}  (episode reset: stop -> home -> re-arm)
 
 On startup it parks at HOME and closes the gripper, then holds at home under impedance
 (--no-home / --no-gripper to skip; --home-gripper to calibrate the gripper first).
@@ -58,12 +59,17 @@ def main():
         gs = set_gripper(args.ip, "close", force=args.grip_force, do_homing=args.home_gripper)
         print(f"  gripper width={gs.width:.4f} m  is_grasped={gs.is_grasped}")
 
-    ctrl = JointImpedanceController(robot, max_delta_tau=args.max_delta_tau,
-                                    reference_mode=args.reference_mode, max_dq=args.max_dq)
-    ctrl.start()                                   # 1 kHz loop begins (now holding at HOME)
+    def make_impedance():
+        c = JointImpedanceController(robot, max_delta_tau=args.max_delta_tau,
+                                     reference_mode=args.reference_mode, max_dq=args.max_dq)
+        c.start()
+        return c
+
+    ctrl = make_impedance()                        # 1 kHz loop begins (now holding at HOME)
     print("joint-impedance controller running (holding at home); set_action enabled")
 
     def handle(req):
+        nonlocal ctrl
         cmd = req.get("cmd")
         if cmd == "ping":
             return {"ok": True}
@@ -78,6 +84,14 @@ def main():
         if cmd == "set_action":
             ctrl.set_action(req["a"])              # non-blocking; 1 kHz loop tracks it
             return {"ok": True}
+        if cmd == "reset":                         # episode reset (BLOCKING): stop -> home (+gripper) -> re-arm
+            ctrl.stop()                            # end the torque loop; firmware idle-holds during the move
+            go_home(robot, args.home)              # async position -> home, then released
+            grip = req.get("gripper", "close")
+            if grip in ("close", "open"):
+                set_gripper(args.ip, grip, force=args.grip_force)
+            ctrl = make_impedance()                # FRESH controller reads home -> holds there, no jump
+            return {"ok": True, "mode": "reset-home"}
         return {"ok": False, "error": f"unknown cmd: {cmd!r}"}
 
     ctx = zmq.Context()
