@@ -10,7 +10,9 @@ Protocol (zmq REQ/REP):
   {"cmd":"get_state"}            -> {"ok":true,"q":[7],"dq":[7],"ee_pose":[[4]x4],"controlling":bool}
   {"cmd":"set_action","a":[21]}  -> {"ok":true}      (a = [Δq(7), Kp(7), Kd(7)])
 
-Run on the ROBOT PC (e-stop in hand — the arm becomes live on startup):
+On startup it parks at HOME and closes the gripper, then holds at home under impedance
+(--no-home / --no-gripper to skip; --home-gripper to calibrate the gripper first).
+Run on the ROBOT PC, e-stop in hand — the arm becomes live on startup:
   python servers/impedance_server.py --ip 172.16.0.2 --bind tcp://0.0.0.0:5556 --max-dq 0.5
 """
 import argparse
@@ -23,6 +25,7 @@ import pylibfranka as franka
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
 from controllers.joint_impedance_controller import JointImpedanceController
+from controllers.home import Q_HOME, go_home, set_gripper
 
 
 def main():
@@ -32,13 +35,33 @@ def main():
     ap.add_argument("--max-delta-tau", type=float, default=1.0, help="per-tick torque slew limit [Nm]")
     ap.add_argument("--max-dq", type=float, default=0.5, help="safety clamp on |Δq| per action [rad]")
     ap.add_argument("--reference-mode", choices=["measured", "commanded"], default="measured")
+    ap.add_argument("--home", type=float, nargs=7, default=Q_HOME, metavar="Q",
+                    help="home joint pose to park at on startup [rad] (default: Franka ready)")
+    ap.add_argument("--no-home", action="store_true", help="don't move to home on startup")
+    ap.add_argument("--no-gripper", action="store_true", help="don't close the gripper on startup")
+    ap.add_argument("--grip-force", type=float, default=40.0, help="gripper close force [N]")
+    ap.add_argument("--home-gripper", action="store_true", help="calibrate the gripper (homing) first")
+    ap.add_argument("--yes", action="store_true", help="skip the e-stop safety prompt before homing")
     args = ap.parse_args()
 
     robot = franka.Robot(args.ip, franka.RealtimeConfig.kIgnore)
+
+    # --- park at HOME + close the gripper BEFORE going live with impedance ---
+    if not args.no_home:
+        if not args.yes:
+            input("Workspace clear, e-stop in hand? Enter to move HOME then arm impedance... ")
+        print("moving to home...")
+        reached, _ = go_home(robot, args.home)
+        print(f"  home reached={reached}")
+    if not args.no_gripper:
+        print("closing gripper...")
+        gs = set_gripper(args.ip, "close", force=args.grip_force, do_homing=args.home_gripper)
+        print(f"  gripper width={gs.width:.4f} m  is_grasped={gs.is_grasped}")
+
     ctrl = JointImpedanceController(robot, max_delta_tau=args.max_delta_tau,
                                     reference_mode=args.reference_mode, max_dq=args.max_dq)
-    ctrl.start()                                   # 1 kHz loop begins (holds current pose)
-    print("joint-impedance controller running (holding current pose); set_action enabled")
+    ctrl.start()                                   # 1 kHz loop begins (now holding at HOME)
+    print("joint-impedance controller running (holding at home); set_action enabled")
 
     def handle(req):
         cmd = req.get("cmd")
