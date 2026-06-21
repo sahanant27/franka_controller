@@ -82,9 +82,9 @@ class JointPositionController:
     def move_to(self, q_target, hz=50.0, timeout=None, ease=False, ease_time=None):
         """Blocking move. Returns (reached: bool, final_q). Re-sends + polls q.
 
-        ease=True streams a MIN-JERK (ease-in/ease-out) trajectory from the current q to
-        q_target, so the arm starts AND settles gently instead of driving at max_velocity
-        and decelerating abruptly at the target — used for go-home (a soft arrival)."""
+        ease=True streams an EASED (asymmetric trapezoidal) trajectory from current q to
+        q_target: a SHORT accel ramp for a prompt start (no frozen lead-in), cruise, then a
+        LONG decel ramp so it settles gently instead of decelerating abruptly — go-home."""
         q_target = self._clamp(q_target)
         q0 = self.read_q()
         dt = 1.0 / hz
@@ -92,14 +92,24 @@ class JointPositionController:
             dist = float(np.max(np.abs(q_target - q0)))
             if dist <= self.tol:                       # already there: don't nudge
                 return True, q0
-            # duration so the min-jerk PEAK speed (1.875*Δq/T) ~= max_velocity (mid-move matches the old
-            # constant-velocity home; only the start/arrival are eased). floor 1.0 s.
-            T = ease_time if ease_time is not None else max(1.875 * dist / self.max_velocity, 1.0)
+            # asymmetric trapezoidal velocity: short accel ramp (prompt start) -> cruise -> long decel
+            # ramp (gentle arrival). a<d => leaves quickly, eases in softly. Position s(tau) = area under v.
+            a, d = 0.12, 0.38                          # accel / decel fractions of the move
+            peak = 1.0 / (1.0 - 0.5 * a - 0.5 * d)     # cruise speed in normalized (Δq/T) units
+            # T so cruise speed ~= 0.9*max_velocity (small margin under the handler's velocity limit). floor 1.0 s.
+            T = ease_time if ease_time is not None else max(peak * dist / (0.9 * self.max_velocity), 1.0)
             t0 = time.monotonic()
             while True:
                 loop = time.monotonic()
                 tau = min(1.0, (loop - t0) / T)
-                s = tau * tau * tau * (tau * (6.0 * tau - 15.0) + 10.0)   # min-jerk: 6τ⁵-15τ⁴+10τ³
+                if tau <= a:                            # accel ramp
+                    area = 0.5 * tau * tau / a
+                elif tau <= 1.0 - d:                    # cruise
+                    area = 0.5 * a + (tau - a)
+                else:                                   # decel ramp -> velocity hits 0 at tau=1 (soft arrival)
+                    td = tau - (1.0 - d)
+                    area = 0.5 * a + (1.0 - d - a) + (td - 0.5 * td * td / d)
+                s = min(1.0, peak * area)
                 self.set_target(q0 + s * (q_target - q0))
                 if tau >= 1.0 and np.max(np.abs(self.read_q() - q_target)) <= self.tol:
                     return True, self.read_q()

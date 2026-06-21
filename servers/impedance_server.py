@@ -33,7 +33,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ip", default="172.16.0.2")
     ap.add_argument("--bind", default="tcp://0.0.0.0:5556")
-    ap.add_argument("--max-delta-tau", type=float, default=1.0, help="per-tick torque slew limit [Nm]")
+    ap.add_argument("--max-delta-tau", type=float, default=0.8,
+                    help="per-tick torque slew limit [Nm]; at 1 kHz this caps dτ/dt (0.8 -> 800 Nm/s, under "
+                         "the ~1000 Nm/s reflex). Final backstop — gains+target are interpolated so it rarely binds.")
     ap.add_argument("--max-dq", type=float, default=0.5, help="safety clamp on |Δq| per action [rad]")
     ap.add_argument("--interp-time", type=float, default=0.2,
                     help="linear target-interpolation ramp time [s] ~ the policy period (5 Hz -> 0.2). "

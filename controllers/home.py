@@ -20,7 +20,7 @@ def go_home(robot, q_home=Q_HOME, max_vel=0.4, tol=0.02):
     Releases the position controller before returning so another controller can take `robot`."""
     ctrl = JointPositionController(robot, max_velocity=max_vel, goal_tolerance=tol)
     try:
-        return ctrl.move_to(np.asarray(q_home, dtype=float), ease=True)   # min-jerk: gentle start + soft arrival
+        return ctrl.move_to(np.asarray(q_home, dtype=float), ease=True)   # eased: prompt start + soft arrival
     finally:
         ctrl.stop()
 

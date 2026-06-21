@@ -62,7 +62,7 @@ _LO_F = [100.0] * 6
 class JointImpedanceController:
     """1 kHz joint-impedance torque loop fed by a 21-D action."""
 
-    def __init__(self, robot, max_delta_tau=1.0, reference_mode="measured", max_dq=None, interp_time=0.2):
+    def __init__(self, robot, max_delta_tau=0.8, reference_mode="measured", max_dq=None, interp_time=0.2):
         self.robot = robot
         self.max_delta_tau = max_delta_tau          # per-tick torque slew limit [Nm]
         self.reference_mode = reference_mode        # "measured" | "commanded"
@@ -79,8 +79,10 @@ class JointImpedanceController:
         self._q_start = q0.copy()                   # interpolation start: q_ref at the moment the action arrived
         self._q_ref = q0.copy()                     # current interpolated setpoint the 1 kHz PD tracks
         self._t_action = time.monotonic()           # when the current target arrived
-        self._kp = DEFAULT_KP.copy()
-        self._kd = DEFAULT_KD.copy()
+        self._kp = DEFAULT_KP.copy()                 # current interpolated stiffness (loop tracks these)
+        self._kd = DEFAULT_KD.copy()                 # current interpolated damping
+        self._kp_start = DEFAULT_KP.copy(); self._kp_goal = DEFAULT_KP.copy()   # gains ramp like q_ref, so a
+        self._kd_start = DEFAULT_KD.copy(); self._kd_goal = DEFAULT_KD.copy()   # gain step can't kick tau (reflex)
         self._last_q = q0.copy()                    # measured, updated by the loop
         self._last_dq = np.zeros(7)
         self._ee = np.array(s.O_T_EE).reshape(4, 4, order="F")
@@ -107,8 +109,9 @@ class JointImpedanceController:
             self._q_start = self._q_ref.copy()
             self._q_goal = np.clip(base + dq, Q_SOFT_LO, Q_SOFT_HI)
             self._t_action = now
-            self._kp = kp.copy()
-            self._kd = kd.copy() * np.sqrt(kp)
+            # ramp the gains from their CURRENT interpolated value to the new command (same alpha as q_ref)
+            self._kp_start = self._kp.copy(); self._kp_goal = kp.copy()
+            self._kd_start = self._kd.copy(); self._kd_goal = kd.copy() * np.sqrt(kp)
 
 
 
@@ -137,8 +140,10 @@ class JointImpedanceController:
                     # continuous q_ref => continuous PD torque => smooth motion, no torque-step reflex.
                     alpha = min(1.0, (time.monotonic() - self._t_action) / max(self._interp_time, 1e-3))
                     q_ref = self._q_start + alpha * (self._q_goal - self._q_start)
-                    self._q_ref = q_ref              # expose current setpoint for the next action's ramp start
-                    kp, kd = self._kp.copy(), self._kd.copy()
+                    kp = self._kp_start + alpha * (self._kp_goal - self._kp_start)   # interpolate gains too
+                    kd = self._kd_start + alpha * (self._kd_goal - self._kd_start)
+                    self._q_ref = q_ref             # expose current setpoint + gains for the next action's ramp start
+                    self._kp, self._kd = kp, kd
 
                 tau = kp * (q_ref - q) - kd * dq
 
