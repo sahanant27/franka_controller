@@ -23,8 +23,11 @@ sim_impedance_ema.py):
   [ ] 4. (grasp, later) gripper open/close via franka.Gripper — not implemented anywhere yet.
   [ ] 5. (later) atomic position<->impedance mode switch for grasp <-> manipulation.
 
-Δq is relative to the MEASURED q at action time, latched until the next action
-(q_ref = q_meas + Δq; reference_mode="commanded" integrates onto the previous target instead).
+Δq is relative to the MEASURED q at action time (reference_mode="commanded" integrates onto the
+previous target instead). The setpoint is then LINEARLY INTERPOLATED from the current q_ref to
+q_meas+Δq over interp_time (~the 5 Hz policy period), so the 1 kHz loop tracks a smooth ramp, not a
+step — continuous PD torque, no 5 Hz start-stop, no torque-discontinuity reflex. This is target
+tracking only; the policy's EMA action smoother is unchanged (DEPLOY.md §5: EMA, not min-jerk).
 
 Run on the ROBOT PC (pylibfranka env), e-stop in hand:
     python controllers/joint_impedance_controller.py --ip 172.16.0.2 --joint 6 --dq 0.1
@@ -59,7 +62,7 @@ _LO_F = [100.0] * 6
 class JointImpedanceController:
     """1 kHz joint-impedance torque loop fed by a 21-D action."""
 
-    def __init__(self, robot, max_delta_tau=1.0, reference_mode="measured", max_dq=None):
+    def __init__(self, robot, max_delta_tau=1.0, reference_mode="measured", max_dq=None, interp_time=0.2):
         self.robot = robot
         self.max_delta_tau = max_delta_tau          # per-tick torque slew limit [Nm]
         self.reference_mode = reference_mode        # "measured" | "commanded"
@@ -71,7 +74,11 @@ class JointImpedanceController:
         s = robot.read_once()
         q0 = np.array(s.q)
         self._lock = threading.Lock()
-        self._q_ref = q0.copy()                     # latched target
+        self._interp_time = float(interp_time)      # linear-ramp duration to a new target [s] (~ the policy period)
+        self._q_goal = q0.copy()                    # destination the policy commanded (set by set_action)
+        self._q_start = q0.copy()                   # interpolation start: q_ref at the moment the action arrived
+        self._q_ref = q0.copy()                     # current interpolated setpoint the 1 kHz PD tracks
+        self._t_action = time.monotonic()           # when the current target arrived
         self._kp = DEFAULT_KP.copy()
         self._kd = DEFAULT_KD.copy()
         self._last_q = q0.copy()                    # measured, updated by the loop
@@ -92,11 +99,16 @@ class JointImpedanceController:
         dq, kp, kd = a[:7], a[7:14], a[14:21]
         if self.max_dq is not None:                 # safety clamp (golden does this on the target delta)
             dq = np.clip(dq, -self.max_dq, self.max_dq)
+        now = time.monotonic()
         with self._lock:
-            base = self._last_q if self.reference_mode == "measured" else self._q_ref
-            self._q_ref = np.clip(base + dq, Q_SOFT_LO, Q_SOFT_HI)
+            # integrate Δq onto the measured q (measured mode) or the last goal (commanded), clamp to soft limits,
+            # and start a fresh ramp from wherever the interpolation currently is (continuity, no jump mid-ramp).
+            base = self._last_q if self.reference_mode == "measured" else self._q_goal
+            self._q_start = self._q_ref.copy()
+            self._q_goal = np.clip(base + dq, Q_SOFT_LO, Q_SOFT_HI)
+            self._t_action = now
             self._kp = kp.copy()
-            self._kd = kd.copy() * np.sqrt(kp)  
+            self._kd = kd.copy() * np.sqrt(kp)
 
 
 
@@ -119,11 +131,16 @@ class JointImpedanceController:
                 ee = np.array(state.O_T_EE).reshape(4, 4, order="F")
                 jac = np.array(model.zero_jacobian(state)).reshape(6, 7, order="F")  # base frame, column-major
                 with self._lock:
-                    q_ref, kp, kd = self._q_ref.copy(), self._kp.copy(), self._kd.copy()
                     self._last_q, self._last_dq, self._ee = q, dq, ee
                     self._jac = jac
+                    # linearly interpolate the setpoint q_start -> q_goal over interp_time (ZOH step -> ramp):
+                    # continuous q_ref => continuous PD torque => smooth motion, no torque-step reflex.
+                    alpha = min(1.0, (time.monotonic() - self._t_action) / max(self._interp_time, 1e-3))
+                    q_ref = self._q_start + alpha * (self._q_goal - self._q_start)
+                    self._q_ref = q_ref              # expose current setpoint for the next action's ramp start
+                    kp, kd = self._kp.copy(), self._kd.copy()
 
-                tau = kp * (q_ref - q) - kd * dq 
+                tau = kp * (q_ref - q) - kd * dq
 
                 # safety: per-tick slew limit, then absolute clip
                 tau = self._prev_tau + np.clip(tau - self._prev_tau,

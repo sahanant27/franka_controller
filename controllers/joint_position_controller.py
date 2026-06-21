@@ -79,13 +79,37 @@ class JointPositionController:
             raise RuntimeError(f"set_target error: {cmd.error_message}")
         return q
 
-    def move_to(self, q_target, hz=50.0, timeout=None):
-        """Blocking move. Returns (reached: bool, final_q). Re-sends + polls q."""
+    def move_to(self, q_target, hz=50.0, timeout=None, ease=False, ease_time=None):
+        """Blocking move. Returns (reached: bool, final_q). Re-sends + polls q.
+
+        ease=True streams a MIN-JERK (ease-in/ease-out) trajectory from the current q to
+        q_target, so the arm starts AND settles gently instead of driving at max_velocity
+        and decelerating abruptly at the target — used for go-home (a soft arrival)."""
         q_target = self._clamp(q_target)
         q0 = self.read_q()
+        dt = 1.0 / hz
+        if ease:
+            dist = float(np.max(np.abs(q_target - q0)))
+            if dist <= self.tol:                       # already there: don't nudge
+                return True, q0
+            # duration so the min-jerk PEAK speed (1.875*Δq/T) ~= max_velocity (mid-move matches the old
+            # constant-velocity home; only the start/arrival are eased). floor 1.0 s.
+            T = ease_time if ease_time is not None else max(1.875 * dist / self.max_velocity, 1.0)
+            t0 = time.monotonic()
+            while True:
+                loop = time.monotonic()
+                tau = min(1.0, (loop - t0) / T)
+                s = tau * tau * tau * (tau * (6.0 * tau - 15.0) + 10.0)   # min-jerk: 6τ⁵-15τ⁴+10τ³
+                self.set_target(q0 + s * (q_target - q0))
+                if tau >= 1.0 and np.max(np.abs(self.read_q() - q_target)) <= self.tol:
+                    return True, self.read_q()
+                if loop - t0 > T + 3.0:                 # settle margin then give up
+                    return bool(np.max(np.abs(self.read_q() - q_target)) <= self.tol), self.read_q()
+                sleep = dt - (time.monotonic() - loop)
+                if sleep > 0:
+                    time.sleep(sleep)
         if timeout is None:                  # distance / speed + settle margin
             timeout = float(np.max(np.abs(q_target - q0)) / self.max_velocity) + 3.0
-        dt = 1.0 / hz
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout:
             loop = time.monotonic()

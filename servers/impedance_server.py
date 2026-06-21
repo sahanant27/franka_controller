@@ -35,6 +35,9 @@ def main():
     ap.add_argument("--bind", default="tcp://0.0.0.0:5556")
     ap.add_argument("--max-delta-tau", type=float, default=1.0, help="per-tick torque slew limit [Nm]")
     ap.add_argument("--max-dq", type=float, default=0.5, help="safety clamp on |Δq| per action [rad]")
+    ap.add_argument("--interp-time", type=float, default=0.2,
+                    help="linear target-interpolation ramp time [s] ~ the policy period (5 Hz -> 0.2). "
+                         "Ramps q_ref to the new target so the 1 kHz loop tracks a smooth ramp, not a step.")
     ap.add_argument("--reference-mode", choices=["measured", "commanded"], default="measured")
     ap.add_argument("--home", type=float, nargs=7, default=Q_HOME, metavar="Q",
                     help="home joint pose to park at on startup [rad] (default: Franka ready)")
@@ -61,7 +64,8 @@ def main():
 
     def make_impedance():
         c = JointImpedanceController(robot, max_delta_tau=args.max_delta_tau,
-                                     reference_mode=args.reference_mode, max_dq=args.max_dq)
+                                     reference_mode=args.reference_mode, max_dq=args.max_dq,
+                                     interp_time=args.interp_time)
         c.start()
         return c
 
