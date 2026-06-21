@@ -7,7 +7,7 @@ loop) and streams 21-D actions from the perception PC's policy.
 
 Protocol (zmq REQ/REP):
   {"cmd":"ping"}                 -> {"ok":true}
-  {"cmd":"get_state"}            -> {"ok":true,"q":[7],"dq":[7],"ee_pose":[[4]x4],"controlling":bool}
+  {"cmd":"get_state"}            -> {"ok":true,"q":[7],"dq":[7],"ee_pose":[[4]x4],"jacobian":[[7]x6],"controlling":bool}
   {"cmd":"set_action","a":[21]}  -> {"ok":true}      (a = [Δq(7), Kp(7), Kd(7)])
   {"cmd":"reset","gripper":"close"|"open"|"none"} -> {"ok":true}  (episode reset: stop -> home -> re-arm)
 
@@ -76,7 +76,8 @@ def main():
         if cmd == "get_state":
             s = ctrl.get_state()
             rep = {"ok": True, "q": s["q"].tolist(), "dq": s["dq"].tolist(),
-                   "ee_pose": s["T_base_ee"].tolist(), "controlling": s["controlling"]}
+                   "ee_pose": s["T_base_ee"].tolist(), "jacobian": s["jacobian"].tolist(),
+                   "controlling": s["controlling"]}
             if not s["controlling"] and ctrl._error:   # control loop died
                 rep["ok"] = False
                 rep["error"] = f"control error: {ctrl._error}"

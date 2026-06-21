@@ -19,7 +19,7 @@ sim_impedance_ema.py):
          As-is, the policy's Kd in [0.3,2.0] is used as absolute -> the arm RINGS (sim-proven).
   [ ] 2. PURE PD — drop coriolis to match training (the robot adds gravity in torque mode):
             tau = kp*(q_ref - q) - kd*dq          # currently: ... + coriolis
-  [ ] 3. Clamp the latched q_ref to FR3 joint limits (safety; control_law.py does this).
+  [x] 3. Clamp the latched q_ref to FR3 soft limits (rel_clamp ±0.9 of range) — DONE in set_action.
   [ ] 4. (grasp, later) gripper open/close via franka.Gripper — not implemented anywhere yet.
   [ ] 5. (later) atomic position<->impedance mode switch for grasp <-> manipulation.
 
@@ -30,17 +30,27 @@ Run on the ROBOT PC (pylibfranka env), e-stop in hand:
     python controllers/joint_impedance_controller.py --ip 172.16.0.2 --joint 6 --dq 0.1
 """
 import argparse
+import os
+import sys
 import threading
 import time
 
 import numpy as np
 import pylibfranka as franka
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root for sibling controllers
+from controllers.joint_position_controller import Q_MIN, Q_MAX   # FR3 joint limits (single source of truth)
+
 # Panda per-joint torque limits [Nm].
 MAX_TORQUES = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
 # Default hold gains (used until the policy sends an action). Policy overrides.
 DEFAULT_KP = np.array([80.0, 80.0, 80.0, 80.0, 30.0, 20.0, 12.0])
 DEFAULT_KD = 2.0 * np.sqrt(DEFAULT_KP)
+# Absolute joint-target SOFT limits. The training env clamps target_q to rel_clamp_joint_target = [-0.9, 0.9]
+_Q_MID = 0.5 * (Q_MIN + Q_MAX)
+_Q_HALF = 0.5 * (Q_MAX - Q_MIN)
+Q_SOFT_LO = _Q_MID - 0.9 * _Q_HALF
+Q_SOFT_HI = _Q_MID + 0.9 * _Q_HALF
 
 _LO_TAU = [100.0] * 7        # collision thresholds (loose: don't false-trip the policy)
 _LO_F = [100.0] * 6
@@ -67,6 +77,7 @@ class JointImpedanceController:
         self._last_q = q0.copy()                    # measured, updated by the loop
         self._last_dq = np.zeros(7)
         self._ee = np.array(s.O_T_EE).reshape(4, 4, order="F")
+        self._jac = np.zeros((6, 7))                # base-frame zero-Jacobian (∂[v;ω]_ee/∂q), latched by the loop
         self._prev_tau = np.zeros(7)
         self._running = False
         self._thread = None
@@ -83,9 +94,8 @@ class JointImpedanceController:
             dq = np.clip(dq, -self.max_dq, self.max_dq)
         with self._lock:
             base = self._last_q if self.reference_mode == "measured" else self._q_ref
-            self._q_ref = base + dq                 # latch q_ref = base + Δq  # TODO(3): clip to FR3 limits
+            self._q_ref = np.clip(base + dq, Q_SOFT_LO, Q_SOFT_HI)
             self._kp = kp.copy()
-            # self._kd = kd.copy()                    # TODO(1): self._kd = kd * np.sqrt(kp)  (Kd = √Kp·action)
             self._kd = kd.copy() * np.sqrt(kp)  
 
 
@@ -93,7 +103,7 @@ class JointImpedanceController:
     def get_state(self):
         with self._lock:
             return {"q": self._last_q.copy(), "dq": self._last_dq.copy(),
-                    "T_base_ee": self._ee.copy(),
+                    "T_base_ee": self._ee.copy(), "jacobian": self._jac.copy(),
                     "controlling": self._running and self._error is None}
 
     # --- control loop ------------------------------------------------------
@@ -107,11 +117,12 @@ class JointImpedanceController:
                 dq = np.array(state.dq)
                 coriolis = np.array(model.coriolis(state))
                 ee = np.array(state.O_T_EE).reshape(4, 4, order="F")
+                jac = np.array(model.zero_jacobian(state)).reshape(6, 7, order="F")  # base frame, column-major
                 with self._lock:
                     q_ref, kp, kd = self._q_ref.copy(), self._kp.copy(), self._kd.copy()
                     self._last_q, self._last_dq, self._ee = q, dq, ee
+                    self._jac = jac
 
-                # tau = kp * (q_ref - q) - kd * dq + coriolis   # TODO(2): drop coriolis -> pure PD (match training)
                 tau = kp * (q_ref - q) - kd * dq 
 
                 # safety: per-tick slew limit, then absolute clip
