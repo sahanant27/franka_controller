@@ -9,6 +9,7 @@ Protocol (zmq REQ/REP):
   {"cmd":"ping"}                 -> {"ok":true}
   {"cmd":"get_state"}            -> {"ok":true,"q":[7],"dq":[7],"ee_pose":[[4]x4],"jacobian":[[7]x6],"controlling":bool}
   {"cmd":"set_action","a":[21]}  -> {"ok":true}      (a = [Δq(7), Kp(7), Kd(7)])
+  {"cmd":"gripper","action":"close"|"open"[,"width","force"]} -> {"ok":true,"width","is_grasped"}
   {"cmd":"reset","gripper":"close"|"open"|"none"} -> {"ok":true}  (episode reset: stop -> home -> re-arm)
 
 On startup it parks at HOME and closes the gripper, then holds at home under impedance
@@ -91,6 +92,10 @@ def main():
         if cmd == "set_action":
             ctrl.set_action(req["a"])              # non-blocking; 1 kHz loop tracks it
             return {"ok": True}
+        if cmd == "gripper":                       # open/close the gripper (separate connection; arm keeps running)
+            gs = set_gripper(args.ip, req.get("action", "close"),
+                             width=req.get("width", 0.0), force=req.get("force", args.grip_force))
+            return {"ok": True, "width": gs.width, "is_grasped": gs.is_grasped}
         if cmd == "reset":                         # episode reset (BLOCKING): stop -> home (+gripper) -> re-arm
             ctrl.stop()                            # end the torque loop; firmware idle-holds during the move
             go_home(robot, args.home)              # async position -> home, then released
