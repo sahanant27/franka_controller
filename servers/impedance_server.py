@@ -92,9 +92,13 @@ def main():
         if cmd == "set_action":
             ctrl.set_action(req["a"])              # non-blocking; 1 kHz loop tracks it
             return {"ok": True}
-        if cmd == "gripper":                       # open/close the gripper (separate connection; arm keeps running)
+        if cmd == "gripper":                       # open/close the gripper
+            # STOP the torque loop first: the blocking gripper call would otherwise starve the 1 kHz loop
+            # (GIL / blocking) and trip a communication-constraints reflex. Restart holding the current pose.
+            ctrl.stop()
             gs = set_gripper(args.ip, req.get("action", "close"),
                              width=req.get("width", 0.0), force=req.get("force", args.grip_force))
+            ctrl = make_impedance()                # fresh loop reads the current q -> holds there, no jump
             return {"ok": True, "width": gs.width, "is_grasped": gs.is_grasped}
         if cmd == "reset":                         # episode reset (BLOCKING): stop -> home (+gripper) -> re-arm
             ctrl.stop()                            # end the torque loop; firmware idle-holds during the move

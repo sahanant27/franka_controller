@@ -87,6 +87,7 @@ class JointImpedanceController:
         self._last_dq = np.zeros(7)
         self._ee = np.array(s.O_T_EE).reshape(4, 4, order="F")
         self._jac = np.zeros((6, 7))                # base-frame zero-Jacobian (∂[v;ω]_ee/∂q), latched by the loop
+        self._tick = 0                              # loop counter (used to compute the Jacobian only every Nth tick)
         self._prev_tau = np.zeros(7)
         self._running = False
         self._thread = None
@@ -130,12 +131,14 @@ class JointImpedanceController:
                 state, _ = active.readOnce()        # blocks ~1 ms (paces the loop)
                 q = np.array(state.q)
                 dq = np.array(state.dq)
-                coriolis = np.array(model.coriolis(state))
                 ee = np.array(state.O_T_EE).reshape(4, 4, order="F")
-                jac = np.array(model.zero_jacobian(state)).reshape(6, 7, order="F")  # base frame, column-major
+                self._tick += 1
+                jac = (np.array(model.zero_jacobian(state)).reshape(6, 7, order="F")
+                       if self._tick % 20 == 0 else None)     # jacobian at ~50 Hz (read by get_state) — too costly every 1 kHz tick
                 with self._lock:
                     self._last_q, self._last_dq, self._ee = q, dq, ee
-                    self._jac = jac
+                    if jac is not None:
+                        self._jac = jac
                     # linearly interpolate the setpoint q_start -> q_goal over interp_time (ZOH step -> ramp):
                     # continuous q_ref => continuous PD torque => smooth motion, no torque-step reflex.
                     alpha = min(1.0, (time.monotonic() - self._t_action) / max(self._interp_time, 1e-3))
