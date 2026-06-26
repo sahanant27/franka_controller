@@ -52,6 +52,7 @@ def main():
     args = ap.parse_args()
 
     robot = franka.Robot(args.ip, franka.RealtimeConfig.kIgnore)
+    robot.automatic_error_recovery()               # clear any reflex left from a previous crash so we can start
 
     # --- park at HOME + close the gripper BEFORE going live with impedance ---
     if not args.no_home:
@@ -66,6 +67,7 @@ def main():
         print(f"  gripper width={gs.width:.4f} m  is_grasped={gs.is_grasped}")
 
     def make_impedance():
+        robot.automatic_error_recovery()           # clear any prior reflex/error so (re)starting control works
         c = JointImpedanceController(robot, max_delta_tau=args.max_delta_tau,
                                      reference_mode=args.reference_mode, max_dq=args.max_dq,
                                      interp_time=args.interp_time)
@@ -96,9 +98,11 @@ def main():
             # STOP the torque loop first: the blocking gripper call would otherwise starve the 1 kHz loop
             # (GIL / blocking) and trip a communication-constraints reflex. Restart holding the current pose.
             ctrl.stop()
-            gs = set_gripper(args.ip, req.get("action", "close"),
-                             width=req.get("width", 0.0), force=req.get("force", args.grip_force))
-            ctrl = make_impedance()                # fresh loop reads the current q -> holds there, no jump
+            try:
+                gs = set_gripper(args.ip, req.get("action", "close"),
+                                 width=req.get("width", 0.0), force=req.get("force", args.grip_force))
+            finally:
+                ctrl = make_impedance()            # ALWAYS restart the loop (even if the gripper op failed) — else the arm is left uncontrolled
             return {"ok": True, "width": gs.width, "is_grasped": gs.is_grasped}
         if cmd == "reset":                         # episode reset (BLOCKING): stop -> home (+gripper) -> re-arm
             ctrl.stop()                            # end the torque loop; firmware idle-holds during the move

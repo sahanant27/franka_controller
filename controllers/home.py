@@ -34,6 +34,12 @@ def set_gripper(ip, action="close", width=0.0, speed=0.1, force=40.0, do_homing=
             return g.read_once()
     if action == "open":
         g.move(GRIPPER_MAX_WIDTH, speed)
-    else:                                            # close: grasp clamps with force (object or shut)
-        g.grasp(width, speed, force)
+    else:                                            # close: grasp the object with force
+        # grasp(width=0) is rejected by the firmware (and won't move) — grasp at a non-zero target
+        # (the object's measured width); the fingers stop on the object and apply `force`.
+        w = min(GRIPPER_MAX_WIDTH, max(0.005, float(width)))
+        try:                                         # libfranka grasp(width, speed, force, eps_inner, eps_outer):
+            g.grasp(w, speed, force, 0.04, 0.04)     # +/-4 cm tolerance -> grips even if the width estimate is off
+        except TypeError:                            # binding doesn't expose epsilon args -> 3-arg form
+            g.grasp(w, speed, force)
     return g.read_once()
