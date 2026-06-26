@@ -111,13 +111,15 @@ class JointPositionController:
                     area = 0.5 * a + (1.0 - d - a) + (td - 0.5 * td * td / d)
                 s = min(1.0, peak * area)
                 self.set_target(q0 + s * (q_target - q0))
-                if tau >= 1.0 and np.max(np.abs(self.read_q() - q_target)) <= self.tol:
-                    return True, self.read_q()
-                if loop - t0 > T + 3.0:                 # settle margin then give up
-                    return bool(np.max(np.abs(self.read_q() - q_target)) <= self.tol), self.read_q()
+                if tau >= 1.0:                          # eased motion done -> hold+settle below GUARANTEES arrival
+                    break                               # (don't return here: the arm may still be lagging the target)
+                if loop - t0 > T + 3.0:                 # safety: eased motion overran -> still settle below
+                    break
                 sleep = dt - (time.monotonic() - loop)
                 if sleep > 0:
                     time.sleep(sleep)
+            # fall through: keep commanding q_target and poll until the arm actually reaches it (a released
+            # async controller freezes the arm wherever it is, so we must arrive before go_home's ctrl.stop()).
         if timeout is None:                  # distance / speed + settle margin
             timeout = float(np.max(np.abs(q_target - q0)) / self.max_velocity) + 3.0
         t0 = time.monotonic()
