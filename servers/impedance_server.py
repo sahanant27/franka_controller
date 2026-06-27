@@ -109,7 +109,7 @@ def main():
             robot.automatic_error_recovery()       # clear any latched reflex (e.g. from the Ctrl-C stop) so the home Move isn't rejected
             go_home(robot, args.home)              # async position -> home, then released
             grip = req.get("gripper", "close")
-            if grip in ("close", "open"):
+            if grip in ("close", "shut", "open"):
                 set_gripper(args.ip, grip, force=args.grip_force)
             ctrl = make_impedance()                # FRESH controller reads home -> holds there, no jump
             return {"ok": True, "mode": "reset-home"}

@@ -26,7 +26,10 @@ def go_home(robot, q_home=Q_HOME, max_vel=0.4, tol=0.02):
 
 
 def set_gripper(ip, action="close", width=0.0, speed=0.1, force=40.0, do_homing=False):
-    """Gripper control on a SEPARATE connection. action: 'close' | 'open' | 'home'. Returns GripperState."""
+    """Gripper control on a SEPARATE connection. action: 'close' | 'shut' | 'open' | 'home'.
+    'close' GRASPS (parks at the width target + applies force — for holding an object);
+    'shut' fully closes the fingers via a position move (non-prehensile pusher tool, no object).
+    Returns GripperState."""
     g = franka.Gripper(ip)
     if do_homing or action == "home":
         g.homing()
@@ -34,6 +37,8 @@ def set_gripper(ip, action="close", width=0.0, speed=0.1, force=40.0, do_homing=
             return g.read_once()
     if action == "open":
         g.move(GRIPPER_MAX_WIDTH, speed)
+    elif action == "shut":                           # fully close the fingers (pusher) — position move, NO grasp/force,
+        g.move(0.0, speed)                           # so it goes to 0 (grasp(0.005) instead PARKS at ~5 mm = looks "open")
     else:                                            # close: grasp the object with force
         # grasp(width=0) is rejected by the firmware (and won't move) — grasp at a non-zero target
         # (the object's measured width); the fingers stop on the object and apply `force`.
