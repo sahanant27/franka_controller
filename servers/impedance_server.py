@@ -104,8 +104,9 @@ def main():
             finally:
                 ctrl = make_impedance()            # ALWAYS restart the loop (even if the gripper op failed) — else the arm is left uncontrolled
             return {"ok": True, "width": gs.width, "is_grasped": gs.is_grasped}
-        if cmd == "reset":                         # episode reset (BLOCKING): stop -> home (+gripper) -> re-arm
+        if cmd == "reset":                         # episode reset (BLOCKING): stop -> recover -> home (+gripper) -> re-arm
             ctrl.stop()                            # end the torque loop; firmware idle-holds during the move
+            robot.automatic_error_recovery()       # clear any latched reflex (e.g. from the Ctrl-C stop) so the home Move isn't rejected
             go_home(robot, args.home)              # async position -> home, then released
             grip = req.get("gripper", "close")
             if grip in ("close", "open"):
