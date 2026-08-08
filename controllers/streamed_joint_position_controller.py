@@ -94,19 +94,35 @@ class StreamedJointPositionController:
             return snap
 
     def _loop(self):
+        # HOT PATH: must respond every 1 ms or the firmware reflexes with
+        # communication_constraints_violation. Keep allocations minimal and the
+        # lock window tiny; the state snapshot (np.array x3 + reshape + dict) is
+        # the expensive part, so it runs decimated at 100 Hz — still 2-4x fresher
+        # than anything the clients consume.
+        read, write = self._active.readOnce, self._active.writeOnce
+        JP = franka.JointPositions
+        wn2, two_wn, vmax = self._wn * self._wn, 2.0 * self._wn, self.max_velocity
+        count = 0
         try:
             while self._running:
-                state, duration = self._active.readOnce()
-                dt = max(duration.to_sec(), 1e-4)          # ~1 ms; guard first-call 0
-                with self._lock:
-                    self._state = self._snapshot(state)
-                    goal = self._target
+                state, duration = read()
+                dt = duration.to_sec()
+                if not 0.0 < dt <= 0.01:                   # first call / hiccup guard
+                    dt = 0.001
+                count += 1
+                if count % 10 == 0:                        # 100 Hz state cache
+                    snap = self._snapshot(state)
+                    with self._lock:
+                        self._state = snap
+                        goal = self._target
+                else:
+                    with self._lock:
+                        goal = self._target
                 # critically-damped tracker: reference glides, never parks
-                acc = self._wn * self._wn * (goal - self._x) - 2.0 * self._wn * self._v
-                self._v = np.clip(self._v + acc * dt,
-                                  -self.max_velocity, self.max_velocity)
+                acc = wn2 * (goal - self._x) - two_wn * self._v
+                self._v = np.clip(self._v + acc * dt, -vmax, vmax)
                 self._x = np.clip(self._x + self._v * dt, Q_MIN, Q_MAX)
-                self._active.writeOnce(franka.JointPositions(self._x.tolist()))
+                write(JP(self._x.tolist()))
         except Exception as e:                             # loop died: surface, stop
             self._error = str(e)
             self._running = False

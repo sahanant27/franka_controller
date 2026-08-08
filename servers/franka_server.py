@@ -170,6 +170,17 @@ def main():
                     help="no Franka Hand attached / skip gripper support")
     args = ap.parse_args()
 
+    if args.controller == "streamed":
+        # The 1 kHz loop must answer every 1 ms. Python's DEFAULT GIL switch
+        # interval is 5 ms — any other thread (zmq REP, gripper poll) could hold
+        # the GIL for five control cycles and trip the firmware's
+        # communication_constraints_violation reflex. Sub-ms handoffs fix that.
+        sys.setswitchinterval(0.0005)
+        try:
+            os.nice(-10)                      # favor us over other processes (best effort)
+        except (OSError, PermissionError):
+            pass
+
     robot = franka.Robot(args.ip, franka.RealtimeConfig.kIgnore)
     streamer = arm_streamer(robot, args)      # arm now actively held at current pose
     grip = None if args.no_gripper else GripperService(args.ip)
