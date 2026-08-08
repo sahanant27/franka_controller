@@ -24,6 +24,7 @@ Run on the ROBOT PC (e-stop in hand — the arm becomes live on startup):
   python servers/franka_server.py --ip 172.16.0.2 --bind tcp://0.0.0.0:5556
 """
 import argparse
+import multiprocessing
 import os
 import sys
 import threading
@@ -42,17 +43,21 @@ class GripperService:
     """Gripper access that never stalls the REP loop.
 
     Reads: a background thread with its OWN gripper connection caches the width
-    (~10 Hz) so get_state can attach it for free. Commands: executed on a
-    worker thread via home.set_gripper (which opens its own connection per
-    call, the pattern already validated there) — the zmq reply returns
-    immediately, mirroring the ROS stack's send_goal_async semantics.
+    (~10 Hz) so get_state can attach it for free. Commands: executed in a
+    SEPARATE PROCESS (spawn) via home.set_gripper — NOT a thread: pylibfranka's
+    blocking grasp/move holds the GIL for ~1 s, which would freeze the whole
+    server (state replies stall -> client staleness guards trip, and the 50 Hz
+    feeder bursts on release -> arm jerk). A spawned process has its own GIL
+    and its own gripper connection; the zmq reply returns immediately,
+    mirroring the ROS stack's send_goal_async semantics.
     """
 
     def __init__(self, ip, poll_s=0.1):
         self.ip = ip
         self._lock = threading.Lock()
         self._width = None
-        self._busy = False
+        self._proc = None
+        self._ctx = multiprocessing.get_context("spawn")   # never fork libfranka state
         self._running = True
         threading.Thread(target=self._poll, args=(poll_s,), daemon=True,
                          name="gripper_poll").start()
@@ -74,22 +79,15 @@ class GripperService:
             return None if self._width is None else self._width / 2.0
 
     def command(self, action, width=0.0, force=40.0):
-        """Fire-and-forget open/close on a worker thread. One at a time."""
+        """Fire-and-forget open/close in a spawned process. One at a time."""
         with self._lock:
-            if self._busy:
+            if self._proc is not None and self._proc.is_alive():
                 return False
-            self._busy = True
-
-        def run():
-            try:
-                set_gripper(self.ip, action=action, width=width, force=force)
-            except Exception as e:
-                print(f"gripper {action} failed: {e}")
-            finally:
-                with self._lock:
-                    self._busy = False
-
-        threading.Thread(target=run, daemon=True, name="gripper_cmd").start()
+            self._proc = self._ctx.Process(
+                target=set_gripper, daemon=True,
+                kwargs=dict(ip=self.ip, action=action, width=float(width),
+                            force=float(force)))
+            self._proc.start()
         return True
 
     def stop(self):
