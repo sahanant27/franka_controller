@@ -10,6 +10,8 @@ Protocol (JSON over zmq REQ/REP):
   {"cmd":"ping"}                -> {"ok":true}
   {"cmd":"get_state"}           -> {"ok":true,"q":[7],"dq":[7],"ee_pose":[[4]x4]}
   {"cmd":"set_target","q":[7]}  -> {"ok":true}     (updates the streamed target)
+  {"cmd":"recover"}             -> {"ok":true}     (reflex/collision recovery: clear the
+                                   error, re-arm the controller, hold current pose)
 
 Run on the ROBOT PC (e-stop in hand — the arm becomes live on startup):
   python servers/franka_server.py --ip 172.16.0.2 --bind tcp://0.0.0.0:5556
@@ -45,6 +47,25 @@ def handle(req, streamer):
     return {"ok": False, "error": f"unknown cmd: {cmd!r}"}
 
 
+def arm_streamer(robot, args):
+    """Configure the async controller + start the 50 Hz feeder (holds current pose)."""
+    ctrl = JointPositionController(robot, max_velocity=args.max_vel, goal_tolerance=args.tol)
+    streamer = TargetStreamer(ctrl, rate_hz=args.rate)
+    streamer.start()
+    return streamer
+
+
+def recover(robot, streamer, args):
+    """Reflex/collision/e-stop recovery: release the (dead) controller, clear the
+    robot error, re-arm fresh. The new streamer holds wherever the arm now is."""
+    try:
+        streamer.stop()                       # joins feeder; releases control if any
+    except Exception:
+        pass                                  # control may already be gone (reflex)
+    robot.automatic_error_recovery()
+    return arm_streamer(robot, args)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ip", default="172.16.0.2")
@@ -55,9 +76,7 @@ def main():
     args = ap.parse_args()
 
     robot = franka.Robot(args.ip, franka.RealtimeConfig.kIgnore)
-    ctrl = JointPositionController(robot, max_velocity=args.max_vel, goal_tolerance=args.tol)
-    streamer = TargetStreamer(ctrl, rate_hz=args.rate)
-    streamer.start()                          # arm now actively held at current pose
+    streamer = arm_streamer(robot, args)      # arm now actively held at current pose
     print(f"streamer running @ {args.rate} Hz (holding current pose)")
 
     ctx = zmq.Context()
@@ -66,17 +85,24 @@ def main():
     sock.bind(args.bind)
     print(f"franka_server listening on {args.bind}  (Ctrl-C to stop)")
 
+    warned_error = False
     try:
         while True:
             try:
                 req = sock.recv_json()
             except zmq.Again:
-                if streamer._error:           # surface a dead control thread early
-                    print(f"FATAL: {streamer._error}")
-                    break
+                if streamer._error and not warned_error:   # dead read loop: stay up —
+                    print(f"streamer error (recoverable via 'recover'): {streamer._error}")
+                    warned_error = True                    # the client can send recover
                 continue
             try:
-                rep = handle(req, streamer)
+                if req.get("cmd") == "recover":
+                    streamer = recover(robot, streamer, args)
+                    warned_error = False
+                    print("recovered: error cleared, controller re-armed")
+                    rep = {"ok": True}
+                else:
+                    rep = handle(req, streamer)
             except Exception as e:            # per-request boundary: always reply
                 rep = {"ok": False, "error": str(e), "trace": traceback.format_exc()}
             sock.send_json(rep)
