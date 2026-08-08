@@ -37,6 +37,7 @@ import pylibfranka as franka
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
 from controllers.home import set_gripper
 from controllers.joint_position_controller import JointPositionController, TargetStreamer
+from controllers.streamed_joint_position_controller import StreamedJointPositionController
 
 
 class GripperService:
@@ -122,7 +123,19 @@ def handle(req, streamer, grip):
 
 
 def arm_streamer(robot, args):
-    """Configure the async controller + start the 50 Hz feeder (holds current pose)."""
+    """Start the selected executor (holds current pose). Both expose the same
+    update_target/get_state/stop/_error interface.
+
+    async:    AsyncPositionControlHandler + 50 Hz feeder — validated for SPARSE
+              point-to-point targets; it decelerates at every target, so a
+              continuous stream judders (start-stop).
+    streamed: 1 kHz reference-tracking loop (writeOnce JointPositions) — for
+              continuously streamed targets (policies); reference glides with
+              velocity continuity, no braking between targets. 1 kHz-fresh state.
+    """
+    if args.controller == "streamed":
+        return StreamedJointPositionController(robot, tau=args.tau,
+                                               max_velocity=args.max_vel)
     ctrl = JointPositionController(robot, max_velocity=args.max_vel, goal_tolerance=args.tol)
     streamer = TargetStreamer(ctrl, rate_hz=args.rate)
     streamer.start()
@@ -146,7 +159,13 @@ def main():
     ap.add_argument("--bind", default="tcp://0.0.0.0:5556")
     ap.add_argument("--max-vel", type=float, default=0.4, help="max joint velocity [rad/s]")
     ap.add_argument("--tol", type=float, default=0.05, help="goal tolerance [rad]")
-    ap.add_argument("--rate", type=float, default=50.0, help="feeder re-send rate [Hz]")
+    ap.add_argument("--rate", type=float, default=50.0, help="feeder re-send rate [Hz] (async)")
+    ap.add_argument("--controller", choices=["async", "streamed"], default="streamed",
+                    help="streamed: 1 kHz reference tracking, for continuous policy "
+                         "targets (no start-stop). async: point-to-point goal seeker.")
+    ap.add_argument("--tau", type=float, default=0.06,
+                    help="streamed: reference tracker time constant [s] "
+                         "(bigger = smoother = laggier)")
     ap.add_argument("--no-gripper", action="store_true",
                     help="no Franka Hand attached / skip gripper support")
     args = ap.parse_args()
