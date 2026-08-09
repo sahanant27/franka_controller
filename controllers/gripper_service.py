@@ -1,39 +1,50 @@
 #!/usr/bin/env python3
 """Non-blocking gripper access shared by the servers.
 
-NOTHING gripper-related may run on a thread of the control process:
-pylibfranka's gripper calls hold the GIL — measured on this machine, a single
-Gripper.read_once() can block 80 ms = 80 missed 1 kHz cycles = the firmware's
-communication_constraints_violation reflex. So reads AND commands both run in
-separate spawned processes (own GIL, own gripper connection):
+NOTHING gripper-related may run in the control process, and after arming it may
+never spawn a process or open a gripper connection either:
+  - pylibfranka's gripper calls hold the GIL (measured: a single read_once can
+    block 80 ms = 80 missed 1 kHz cycles = communication_constraints_violation),
+    so in-process threads are out.
+  - a fresh gripper TCP connect / interpreter boot disturbs the robot enough to
+    trip the same reflex (bisected at session start; reproduced at command time
+    — COMM_VIOLATION_DEBUG.md §2/§3), so per-command process spawns are out too.
 
-  reads    — a persistent poll process caches width/is_grasped (~10 Hz) into
-             shared memory; get_state attaches them for free.
-  commands — fire-and-forget spawned process via home.set_gripper; the zmq
-             reply returns immediately, mirroring the ROS stack's
-             send_goal_async semantics.
-
-The arm's control loop keeps running throughout — no stop/restart around
-gripper motion.
+Hence ONE persistent worker process, started before arming, owning poll AND
+commands on a single lifelong gripper connection. Commands go over a queue and
+return immediately (mirroring the ROS stack's send_goal_async semantics); state
+(width / is_grasped) comes back through shared memory. The arm's control loop
+keeps running throughout.
 """
 import multiprocessing
+import queue
 import time
 
-from controllers.home import set_gripper
+from controllers.home import gripper_do
 
 
-def _poll_gripper(ip, poll_s, width_v, grasped_v, running_v):
-    """Poll process body (own GIL): cache gripper state into shared values."""
+def _worker(ip, poll_s, width_v, grasped_v, busy_v, running_v, cmd_q):
+    """Worker process body (own GIL): one lifelong connection for poll + commands."""
     import pylibfranka as franka
     g = franka.Gripper(ip)
     while running_v.value:
+        try:                                  # doubles as the poll pacing
+            cmd = cmd_q.get(timeout=poll_s)
+        except (queue.Empty, InterruptedError):
+            cmd = None
+        if cmd is not None:
+            busy_v.value = 1
+            try:
+                gripper_do(g, **cmd)
+            except Exception:
+                pass                          # failed grasp/move: state below still refreshes
+            busy_v.value = 0
         try:
             gs = g.read_once()
             width_v.value = float(gs.width)
             grasped_v.value = int(gs.is_grasped)
         except Exception:
             pass                              # transient read hiccup: keep last value
-        time.sleep(poll_s)
 
 
 class GripperService:
@@ -42,19 +53,21 @@ class GripperService:
         self._ctx = multiprocessing.get_context("spawn")   # never fork libfranka state
         self._width_v = self._ctx.Value("d", -1.0)         # < 0 = no read yet
         self._grasped_v = self._ctx.Value("i", -1)
+        self._busy_v = self._ctx.Value("i", 0)
         self._running_v = self._ctx.Value("i", 1)
-        self._proc = None                                  # in-flight command process
-        self._poller = self._ctx.Process(
-            target=_poll_gripper, daemon=True,
-            args=(ip, poll_s, self._width_v, self._grasped_v, self._running_v))
-        self._poller.start()
+        self._cmd_q = self._ctx.Queue(maxsize=4)
+        self._worker = self._ctx.Process(
+            target=_worker, daemon=True,
+            args=(ip, poll_s, self._width_v, self._grasped_v,
+                  self._busy_v, self._running_v, self._cmd_q))
+        self._worker.start()
 
     def wait_ready(self, timeout=5.0):
-        """Block until the poll process has its first reading (= gripper connection is up).
+        """Block until the worker has its first reading (= gripper connection is up).
         Arming the robot's RT session while the gripper child is still connecting trips
         communication_constraints_violation at session start (bisected 2026-08-08:
         settled service + 1 kHz loop = clean; connecting service + loop start = dead in
-        0.5 s). Mid-session connects are tolerated — only session START is fragile."""
+        0.5 s)."""
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout:
             if self._width_v.value >= 0:
@@ -73,18 +86,18 @@ class GripperService:
                 "is_grasped": None if g < 0 else bool(g)}
 
     def command(self, action, width=0.0, force=40.0):
-        """Fire-and-forget open/close in a spawned process. One at a time."""
-        if self._proc is not None and self._proc.is_alive():
+        """Queue an open/close on the worker's lifelong connection; returns immediately.
+        One at a time: False while a command is still executing (or the queue is full)."""
+        if self._busy_v.value:
             return False
-        self._proc = self._ctx.Process(
-            target=set_gripper, daemon=True,
-            kwargs=dict(ip=self.ip, action=action, width=float(width),
-                        force=float(force)))
-        self._proc.start()
+        try:
+            self._cmd_q.put_nowait(dict(action=action, width=float(width), force=float(force)))
+        except queue.Full:
+            return False
         return True
 
     def stop(self):
         self._running_v.value = 0
-        self._poller.join(timeout=0.5)
-        if self._poller.is_alive():
-            self._poller.terminate()
+        self._worker.join(timeout=1.5)        # a grasp may be in flight
+        if self._worker.is_alive():
+            self._worker.terminate()

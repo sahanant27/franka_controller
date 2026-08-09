@@ -25,12 +25,13 @@ def go_home(robot, q_home=Q_HOME, max_vel=0.4, tol=0.02):
         ctrl.stop()
 
 
-def set_gripper(ip, action="close", width=0.0, speed=0.1, force=40.0, do_homing=False):
-    """Gripper control on a SEPARATE connection. action: 'close' | 'shut' | 'open' | 'home'.
+def gripper_do(g, action="close", width=0.0, speed=0.1, force=40.0, do_homing=False):
+    """set_gripper's body on an EXISTING connection (GripperService's worker reuses its
+    lifelong connection — spawning/connecting mid-RT-session trips the comm reflex).
+    action: 'close' | 'shut' | 'open' | 'home'.
     'close' GRASPS (parks at the width target + applies force — for holding an object);
     'shut' fully closes the fingers via a position move (non-prehensile pusher tool, no object).
     Returns GripperState."""
-    g = franka.Gripper(ip)
     if do_homing or action == "home":
         g.homing()
         if action == "home":
@@ -48,3 +49,9 @@ def set_gripper(ip, action="close", width=0.0, speed=0.1, force=40.0, do_homing=
         except TypeError:                            # binding doesn't expose epsilon args -> 3-arg form
             g.grasp(w, speed, force)
     return g.read_once()
+
+
+def set_gripper(ip, action="close", width=0.0, speed=0.1, force=40.0, do_homing=False):
+    """One-shot gripper op on its OWN connection — for startup/reset paths only
+    (no RT session live). While the arm is armed, go through GripperService instead."""
+    return gripper_do(franka.Gripper(ip), action, width, speed, force, do_homing)

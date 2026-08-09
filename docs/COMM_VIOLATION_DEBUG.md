@@ -60,7 +60,11 @@ kills the session in ~0.5 s. The servers enforce: GripperService -> wait_ready
 was armed without a settled gripper — fix the gripper connection (cable, FCI
 gripper enabled in Desk) rather than ignoring it.
 
-## 3. Gripper commands mid-session (DIAGNOSIS + fix to implement here)
+## 3. Gripper commands mid-session (IMPLEMENTED 2026-08-08 — design kept for reference)
+
+Status: the persistent-worker design below is now in `controllers/gripper_service.py`
+(`home.py` grew `gripper_do`), and the §6-step-2 hammer test passed on hardware:
+4 close/open cycles mid-session, arm controlling throughout, no reflex.
 
 **Symptom signature:** server runs fine, holds pose, tracks actions — then the
 reflex fires the moment (or within ~1 s of) a gripper open/close command.
