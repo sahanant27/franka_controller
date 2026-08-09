@@ -28,6 +28,7 @@ import pylibfranka as franka
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
 from controllers.joint_impedance_controller import JointImpedanceController
+from controllers.gripper_service import GripperService
 from controllers.home import Q_HOME, go_home, set_gripper
 
 
@@ -90,6 +91,7 @@ def main():
         return c
 
     ctrl = make_impedance()                        # 1 kHz loop begins (now holding at HOME)
+    grip = GripperService(args.ip)                 # non-blocking gripper (spawned commands)
     print("joint-impedance controller running (holding at home); set_action enabled")
 
     def handle(req):
@@ -101,6 +103,7 @@ def main():
             s = ctrl.get_state()
             rep = {"ok": True, "q": s["q"].tolist(), "dq": s["dq"].tolist(),
                    "ee_pose": s["T_base_ee"].tolist(), "jacobian": s["jacobian"].tolist(),
+                   "gripper": grip.mean_finger(),
                    "controlling": s["controlling"]}
             if not s["controlling"] and ctrl._error:   # control loop died
                 rep["ok"] = False
@@ -109,23 +112,23 @@ def main():
         if cmd == "set_action":
             ctrl.set_action(req["a"])              # non-blocking; 1 kHz loop tracks it
             return {"ok": True}
-        if cmd == "gripper":                       # open/close the gripper
-            # STOP the torque loop first: the blocking gripper call would otherwise starve the 1 kHz loop
-            # (GIL / blocking) and trip a communication-constraints reflex. Restart holding the current pose.
-            ctrl.stop()
-            try:
-                gs = set_gripper(args.ip, req.get("action", "close"),
-                                 width=req.get("width", 0.0), force=req.get("force", args.grip_force))
-            finally:
-                ctrl = make_impedance()            # ALWAYS restart the loop (even if the gripper op failed) — else the arm is left uncontrolled
-            return {"ok": True, "width": gs.width, "is_grasped": gs.is_grasped}
+        if cmd == "gripper":                       # open/close, NON-BLOCKING (spawned
+            # process, own GIL — see controllers/gripper_service.py). The torque
+            # loop keeps holding/tracking while the fingers move; the reply
+            # returns immediately so state polling never stalls mid-grasp.
+            started = grip.command(req.get("action", "close"),
+                                   width=req.get("width", 0.0),
+                                   force=req.get("force", args.grip_force))
+            gs = grip.state()
+            return {"ok": True, "started": started,
+                    "width": gs["width"], "is_grasped": gs["is_grasped"]}
         if cmd == "reset":                         # episode reset (BLOCKING): stop -> recover -> home (+gripper) -> re-arm
             ctrl.stop()                            # end the torque loop; firmware idle-holds during the move
             robot.automatic_error_recovery()       # clear any latched reflex (e.g. from the Ctrl-C stop) so the home Move isn't rejected
             go_home(robot, args.home)              # async position -> home, then released
-            grip = req.get("gripper", "close")
-            if grip in ("close", "shut", "open"):
-                set_gripper(args.ip, grip, force=args.grip_force)
+            grip_action = req.get("gripper", "close")   # NOT `grip` — that's the GripperService
+            if grip_action in ("close", "shut", "open"):
+                set_gripper(args.ip, grip_action, force=args.grip_force)
             ctrl = make_impedance()                # FRESH controller reads home -> holds there, no jump
             return {"ok": True, "mode": "reset-home"}
         return {"ok": False, "error": f"unknown cmd: {cmd!r}"}

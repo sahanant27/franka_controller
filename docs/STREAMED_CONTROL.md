@@ -195,5 +195,14 @@ precise about what changes and what does not:
 - [x] sine probe passes on impedance: 11.7 mrad (j4, Kp 200) / 15.9 mrad (j7, Kp 50) lag-comp
       pk-pk, lag ~200 ms, no ringing at any gain — with Kd-coeff 0.7 + `--interp-time 0.1`
       (now the defaults). Old low gains fail on friction deadband + overdamping, not streaming.
-- [ ] client `set_action` path (sender computes dq, fixed gains) behind a config switch   ← **you are here**
-- [ ] close_drawer end-to-end on impedance executor
+- [x] client `set_action` path (sender computes dq, fixed gains) behind a config switch
+      (lfo_inference: `action.executor: impedance`; Δq = q_cmd − measured q → absolute
+      targeting, zero drift; gains ride in every action, no server restart to retune)
+- [x] close_drawer END-TO-END COMPLETE on the impedance executor (2026-08-08) — smooth,
+      full close. Required **kp [600,600,600,600,250,150,50]** (ROS fr3 JTC-class):
+      this policy commands ~6 mrad leads, so contact force = kp × lead; at kp 200 it
+      rests ~1.2 Nm against the drawer and deadlocks at ~75% closed (reproduced 2x);
+      at 600 the same leads finish the push. Run config: 20 Hz, chunk 20 serial, ema 0.9.
+      Contact-force-per-lead is drawer-specific; pick tasks are contact-light.
+- [ ] gripper-on pick tasks (toys_in_drawer, bowl_in_plate)   ← **you are here**
+- [ ] hz 30 (full demo speed): port the async re-planner from lfo_inference `main`
