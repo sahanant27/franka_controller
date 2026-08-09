@@ -160,9 +160,11 @@ def main():
     ap.add_argument("--max-vel", type=float, default=0.4, help="max joint velocity [rad/s]")
     ap.add_argument("--tol", type=float, default=0.05, help="goal tolerance [rad]")
     ap.add_argument("--rate", type=float, default=50.0, help="feeder re-send rate [Hz] (async)")
-    ap.add_argument("--controller", choices=["async", "streamed"], default="streamed",
-                    help="streamed: 1 kHz reference tracking, for continuous policy "
-                         "targets (no start-stop). async: point-to-point goal seeker.")
+    ap.add_argument("--controller", choices=["async", "streamed"], default="async",
+                    help="async (default): compiled point-to-point goal seeker — robust, "
+                         "but brakes at each target. streamed: 1 kHz reference tracking "
+                         "(no start-stop) — EXPERIMENTAL until the machine passes "
+                         "tools/rt_jitter.py (comm-constraints reflex otherwise).")
     ap.add_argument("--tau", type=float, default=0.06,
                     help="streamed: reference tracker time constant [s] "
                          "(bigger = smoother = laggier)")
@@ -176,6 +178,9 @@ def main():
         # the GIL for five control cycles and trip the firmware's
         # communication_constraints_violation reflex. Sub-ms handoffs fix that.
         sys.setswitchinterval(0.0005)
+        import gc
+        gc.freeze()                           # move startup objects out of GC's reach
+        gc.disable()                          # a gen-2 collection pauses for MILLISECONDS
         try:
             os.nice(-10)                      # favor us over other processes (best effort)
         except (OSError, PermissionError):
