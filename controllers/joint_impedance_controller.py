@@ -125,6 +125,16 @@ class JointImpedanceController:
 
     # --- control loop ------------------------------------------------------
     def _loop(self):
+        # SCHED_FIFO for THIS thread only (franka_ros parity: libfranka's active-control
+        # path leaves scheduling to the caller; ros2_control's 1 kHz thread is FIFO).
+        # Measured here (tools/rt_jitter.py): CFS tail is ~1 ms+ under load -> intermittent
+        # communication_constraints_violation; FIFO 80 max overrun 0.24 ms, zero misses.
+        # Needs `realtime` group membership / ulimit -r (a libfranka install requirement).
+        try:
+            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(80))
+        except OSError as e:
+            print(f"joint_impedance: SCHED_FIFO denied ({e}) — running best-effort; "
+                  f"expect comm reflexes under load (check realtime group / ulimit -r)")
         # load the model BEFORE opening the RT session: on a cold start the fetch takes
         # long enough to blow the 1 ms command deadline right at session start
         model = self.robot.load_model()

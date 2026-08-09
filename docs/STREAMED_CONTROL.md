@@ -186,6 +186,10 @@ precise about what changes and what does not:
 - [x] streamed position controller written + wired (`--controller streamed`) — parked pending RT
 - [x] GIL/GC/priority mitigations in server
 - [x] jitter measurement tool (`tools/rt_jitter.py`)
+- [x] machine measured (2026-08-08): PREEMPT_RT kernel + realtime group present. 1 kHz under
+      CFS: max overrun 1.02 ms in 10 s (marginal, worse under load); under SCHED_FIFO 80:
+      max 0.24 ms, zero >1 ms. Torque loop now self-elevates to FIFO 80 (franka_ros parity —
+      libfranka active-control leaves scheduling to the caller; ros2_control's caller is FIFO).
 - [x] policy-free acceptance probe (perception PC: `scripts/test/stream_probe.py`)
 - [x] RealtimeConfig verified from source; decision: impedance executor (§5)
 - [x] native zmq acceptance probe (`tools/impedance_probe.py`: hold/sine vs impedance_server,
@@ -204,5 +208,12 @@ precise about what changes and what does not:
       rests ~1.2 Nm against the drawer and deadlocks at ~75% closed (reproduced 2x);
       at 600 the same leads finish the push. Run config: 20 Hz, chunk 20 serial, ema 0.9.
       Contact-force-per-lead is drawer-specific; pick tasks are contact-light.
+- [x] startup-reflex root cause (2026-08-08, bisected: `tools/hold_diag.py` clean 120 s;
+      server replica −gripper clean / +gripper dead in 0.5 s / +gripper settled 15 s clean):
+      the GripperService child's gripper CONNECT overlapping torque-session START trips
+      communication_constraints_violation; mid-session the interface tolerates ≥18 ms gaps.
+      Fix: `GripperService.wait_ready()` gates arming. Hygiene landed en route: gripper
+      reads+commands out-of-process (gripper read_once holds the GIL up to 80 ms measured),
+      SCHED_FIFO 80 self-elevation in the torque thread, model preload before the session.
 - [ ] gripper-on pick tasks (toys_in_drawer, bowl_in_plate)   ← **you are here**
 - [ ] hz 30 (full demo speed): port the async re-planner from lfo_inference `main`

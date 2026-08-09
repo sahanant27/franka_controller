@@ -18,6 +18,7 @@ Run on the ROBOT PC, e-stop in hand — the arm becomes live on startup:
   python servers/impedance_server.py --ip 172.16.0.2 --bind tcp://0.0.0.0:5556 --max-dq 0.5
 """
 import argparse
+import gc
 import os
 import sys
 import time
@@ -90,8 +91,12 @@ def main():
         c.start()
         return c
 
+    grip = GripperService(args.ip)                 # spawn gripper poll+command processes BEFORE going RT
+    if not grip.wait_ready():                      # MUST be connected before the RT session starts (see wait_ready)
+        print("  warning: gripper poll not ready after 5 s (gripper off?) — arming anyway")
+    sys.setswitchinterval(0.0005)                  # default GIL slice is 5 ms — zmq/json must not hold 5 torque cycles
+    gc.freeze(); gc.disable()                      # a gen-2 GC pause is multiple ms; the 1 kHz loop can't afford one
     ctrl = make_impedance()                        # 1 kHz loop begins (now holding at HOME)
-    grip = GripperService(args.ip)                 # non-blocking gripper (spawned commands)
     print("joint-impedance controller running (holding at home); set_action enabled")
 
     def handle(req):
@@ -156,6 +161,7 @@ def main():
         print("\nshutting down")
     finally:
         ctrl.stop()
+        grip.stop()
         sock.close(0)
         ctx.term()
 

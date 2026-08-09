@@ -33,7 +33,7 @@ def main():
     args = ap.parse_args()
 
     print(f"kernel   : {os.uname().release}")
-    print(f"PREEMPT_RT: {'yes' if 'rt' in os.uname().release.lower() else 'no (or not in name)'}")
+    print(f"PREEMPT_RT: {'yes' if 'PREEMPT_RT' in os.uname().version or 'realtime' in os.uname().release else 'no (or not in name)'}")
     try:
         sched = os.sched_getscheduler(0)
         print(f"scheduler: {'SCHED_FIFO/RR (RT)' if sched in (1, 2) else 'SCHED_OTHER (normal)'}")
