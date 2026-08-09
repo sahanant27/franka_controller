@@ -20,6 +20,7 @@ Run on the ROBOT PC, e-stop in hand — the arm becomes live on startup:
 import argparse
 import os
 import sys
+import time
 import traceback
 
 import zmq
@@ -66,8 +67,22 @@ def main():
         gs = set_gripper(args.ip, "close", force=args.grip_force, do_homing=args.home_gripper)
         print(f"  gripper width={gs.width:.4f} m  is_grasped={gs.is_grasped}")
 
+    def wait_until_still(timeout=2.0, thresh=5e-3, consec=10):
+        """Block until the arm is motionless (all |dq| < thresh for `consec` reads in a row).
+        The firmware's hold torque must be ~gravity-only when torque control takes over —
+        handing off mid-settle is a torque step and trips controller_torque_discontinuity."""
+        still = 0
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            still = still + 1 if max(abs(v) for v in robot.read_once().dq) < thresh else 0
+            if still >= consec:
+                return True
+        print(f"  warning: arm not settled after {timeout}s, arming impedance anyway")
+        return False
+
     def make_impedance():
         robot.automatic_error_recovery()           # clear any prior reflex/error so (re)starting control works
+        wait_until_still()
         c = JointImpedanceController(robot, max_delta_tau=args.max_delta_tau,
                                      reference_mode=args.reference_mode, max_dq=args.max_dq,
                                      interp_time=args.interp_time)

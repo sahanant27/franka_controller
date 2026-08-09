@@ -125,8 +125,10 @@ class JointImpedanceController:
 
     # --- control loop ------------------------------------------------------
     def _loop(self):
-        active = self.robot.start_torque_control()
+        # load the model BEFORE opening the RT session: on a cold start the fetch takes
+        # long enough to blow the 1 ms command deadline right at session start
         model = self.robot.load_model()
+        active = self.robot.start_torque_control()
         try:
             while self._running:
                 state, _ = active.readOnce()        # blocks ~1 ms (paces the loop)
