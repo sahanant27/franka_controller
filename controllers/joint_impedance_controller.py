@@ -10,17 +10,15 @@ Control law each tick (q, dq measured):
 The robot compensates gravity internally for torque control, so we add only
 coriolis (matches the franka examples).
 
-TODO — apply before any manipulation-policy run. The training law is RESOLVED and the
-current code does NOT match it yet (sources agree: CORN pkm/scripts/real/controller.py:768,
-the IsaacLab trace in the policy bundle's control_law.py, and grasping_ws/scripts/robot/
-sim_impedance_ema.py):
-  [ ] 1. Kd is a COEFFICIENT on sqrt(Kp), not an absolute gain. In set_action:
-            self._kd = kd * np.sqrt(kp)          # currently: self._kd = kd.copy()
-         As-is, the policy's Kd in [0.3,2.0] is used as absolute -> the arm RINGS (sim-proven).
-  [ ] 2. PURE PD — drop coriolis to match training (the robot adds gravity in torque mode):
-            tau = kp*(q_ref - q) - kd*dq          # currently: ... + coriolis
-  [x] 3. Clamp the latched q_ref to FR3 soft limits (rel_clamp ±0.9 of range) — DONE in set_action.
-  [ ] 4. (grasp, later) gripper open/close via franka.Gripper — not implemented anywhere yet.
+Training-law status (sources agree: CORN pkm/scripts/real/controller.py:768, the IsaacLab
+trace in the policy bundle's control_law.py, and grasping_ws/scripts/robot/sim_impedance_ema.py):
+  [x] 1. Kd is a COEFFICIENT on sqrt(Kp) — set_action computes self._kd = kd * np.sqrt(kp).
+         CALLER CONTRACT: the action's Kd slot is the coefficient (policy range [0.3,2.0],
+         2.0 = critically damped); sending absolute damping there double-scales it.
+  [x] 2. PURE PD, no coriolis (the robot adds gravity in torque mode): tau = kp*(q_ref-q) - kd*dq.
+  [x] 3. Clamp the latched q_ref to FR3 soft limits (rel_clamp ±0.9 of range) — in set_action.
+  [ ] 4. (grasp, later) gripper open/close via franka.Gripper — impedance_server has a stop/restart
+         path around set_gripper; atomic in-loop grasping not implemented.
   [ ] 5. (later) atomic position<->impedance mode switch for grasp <-> manipulation.
 
 Δq is relative to the MEASURED q at action time (reference_mode="commanded" integrates onto the
@@ -47,8 +45,11 @@ from controllers.joint_position_controller import Q_MIN, Q_MAX   # FR3 joint lim
 # Panda per-joint torque limits [Nm].
 MAX_TORQUES = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
 # Default hold gains (used until the policy sends an action). Policy overrides.
-DEFAULT_KP = np.array([80.0, 80.0, 80.0, 80.0, 30.0, 20.0, 12.0])
-DEFAULT_KD = 2.0 * np.sqrt(DEFAULT_KP)
+# Probe-validated 2026-08-08 (tools/impedance_probe.py, 0.2 Hz sine): these ROS-effort-JTC-like
+# values track to <16 mrad lag-comp residual; the old [80,...,12] set failed at 33-112 mrad
+# (overdamped + friction deadband on the wrist).
+DEFAULT_KP = np.array([200.0, 200.0, 200.0, 200.0, 80.0, 50.0, 50.0])
+DEFAULT_KD = 0.7 * np.sqrt(DEFAULT_KP)
 # Absolute joint-target SOFT limits. The training env clamps target_q to rel_clamp_joint_target = [-0.9, 0.9]
 _Q_MID = 0.5 * (Q_MIN + Q_MAX)
 _Q_HALF = 0.5 * (Q_MAX - Q_MIN)
@@ -205,7 +206,7 @@ def main():
     action[args.joint] = args.dq                    # Δq
     action[7:14] = DEFAULT_KP
     action[7 + args.joint] = args.kp
-    action[14:21] = 2.0 * np.sqrt(action[7:14])     # Kd = 2*sqrt(Kp)
+    action[14:21] = 2.0                             # Kd COEFFICIENT (set_action applies *sqrt(Kp)); 2.0 = critical
     ctrl.set_action(action)
 
     try:

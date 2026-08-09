@@ -24,7 +24,7 @@ import numpy as np
 import pylibfranka as franka
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
-from controllers.joint_impedance_controller import JointImpedanceController, DEFAULT_KP, DEFAULT_KD
+from controllers.joint_impedance_controller import JointImpedanceController, DEFAULT_KP
 
 
 def main():
@@ -38,14 +38,16 @@ def main():
     ap.add_argument("--duration", type=float, default=15.0, help="run time [s]")
     ap.add_argument("--stiffness", type=float, default=None,
                     help="uniform Kp for all joints (default: per-joint DEFAULT_KP)")
+    ap.add_argument("--kd-coeff", type=float, default=2.0,
+                    help="Kd coefficient on sqrt(Kp) (policy range 0.3-2.0; 2.0 = critically damped)")
     ap.add_argument("--max-dq", type=float, default=0.5, help="safety clamp on |Δq| [rad]")
     args = ap.parse_args()
 
     if args.stiffness is None:
-        kp, kd = DEFAULT_KP.copy(), DEFAULT_KD.copy()
+        kp = DEFAULT_KP.copy()
     else:
         kp = np.full(7, args.stiffness)
-        kd = 2.0 * np.sqrt(kp)
+    kd = np.full(7, args.kd_coeff)   # Kd COEFFICIENT (set_action applies *sqrt(Kp)); 2.0 = critical
 
     robot = franka.Robot(args.ip, franka.RealtimeConfig.kIgnore)
     ctrl = JointImpedanceController(robot, max_dq=args.max_dq)

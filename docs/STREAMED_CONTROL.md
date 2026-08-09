@@ -188,7 +188,12 @@ precise about what changes and what does not:
 - [x] jitter measurement tool (`tools/rt_jitter.py`)
 - [x] policy-free acceptance probe (perception PC: `scripts/test/stream_probe.py`)
 - [x] RealtimeConfig verified from source; decision: impedance executor (§5)
-- [ ] impedance_server smoke: holds pose at home, gains sane   ← **you are here**
-- [ ] client `set_action` path (sender computes dq, fixed gains) behind a config switch
-- [ ] sine probe passes on impedance (<~20 mrad residual)
+- [x] native zmq acceptance probe (`tools/impedance_probe.py`: hold/sine vs impedance_server,
+      grades lag-compensated pk-pk residual vs 20 mrad); Kd-coefficient contract fixed in
+      the drive_impedance/demo callers (the action's Kd slot is a coefficient on sqrt(Kp))
+- [x] impedance_server smoke: held at home across multiple sessions, no reflex (2026-08-08)
+- [x] sine probe passes on impedance: 11.7 mrad (j4, Kp 200) / 15.9 mrad (j7, Kp 50) lag-comp
+      pk-pk, lag ~200 ms, no ringing at any gain — with Kd-coeff 0.7 + `--interp-time 0.1`
+      (now the defaults). Old low gains fail on friction deadband + overdamping, not streaming.
+- [ ] client `set_action` path (sender computes dq, fixed gains) behind a config switch   ← **you are here**
 - [ ] close_drawer end-to-end on impedance executor

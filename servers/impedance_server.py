@@ -38,8 +38,8 @@ def main():
                     help="per-tick torque slew limit [Nm]; at 1 kHz this caps dτ/dt (0.8 -> 800 Nm/s, under "
                          "the ~1000 Nm/s reflex). Final backstop — gains+target are interpolated so it rarely binds.")
     ap.add_argument("--max-dq", type=float, default=0.5, help="safety clamp on |Δq| per action [rad]")
-    ap.add_argument("--interp-time", type=float, default=0.2,
-                    help="linear target-interpolation ramp time [s] ~ the policy period (5 Hz -> 0.2). "
+    ap.add_argument("--interp-time", type=float, default=0.1,
+                    help="linear target-interpolation ramp time [s] ~ the policy period (10 Hz -> 0.1). "
                          "Ramps q_ref to the new target so the 1 kHz loop tracks a smooth ramp, not a step.")
     ap.add_argument("--reference-mode", choices=["measured", "commanded"], default="measured")
     ap.add_argument("--home", type=float, nargs=7, default=Q_HOME, metavar="Q",
