@@ -127,6 +127,17 @@ def main():
             gs = grip.state()
             return {"ok": True, "started": started,
                     "width": gs["width"], "is_grasped": gs["is_grasped"]}
+        if cmd == "gripper_sync":                  # RELIABLE gripper, BLOCKING, WITHOUT homing (stop -> set_gripper ->
+            # re-arm AT THE CURRENT POSE). Needed because the non-blocking GripperService path is unreliable here: a
+            # reset's fresh set_gripper connection steals the single gripper connection, so the worker's lifelong one
+            # goes dead and every later `gripper` service command silently fails. set_gripper (own connection, loop
+            # stopped -> no comm reflex) always works; skipping go_home lets it also grip with the arm parked at the
+            # object (where `reset` would home away). make_impedance re-reads the CURRENT pose -> holds there, no jump.
+            ctrl.stop()                            # end the torque loop; firmware idle-holds the arm in place
+            action = req.get("action", "close")
+            gs = set_gripper(args.ip, action, width=req.get("width", 0.0), force=req.get("force", args.grip_force))
+            ctrl = make_impedance()                # recovers + waits-still + re-arms at the current pose (no home)
+            return {"ok": True, "width": float(gs.width), "is_grasped": bool(gs.is_grasped)}
         if cmd == "reset":                         # episode reset (BLOCKING): stop -> recover -> home (+gripper) -> re-arm
             ctrl.stop()                            # end the torque loop; firmware idle-holds during the move
             robot.automatic_error_recovery()       # clear any latched reflex (e.g. from the Ctrl-C stop) so the home Move isn't rejected
