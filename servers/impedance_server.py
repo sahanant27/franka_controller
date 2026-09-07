@@ -34,6 +34,30 @@ from controllers.gripper_service import GripperService
 from controllers.home import Q_HOME, go_home, set_gripper
 
 
+def _impedance_lift(ctrl, dz, hz=10.0, step=0.03, tol=0.01, timeout=8.0, lam=0.1):
+    """Retract the EE straight UP by `dz` m (base +z, orientation HELD) THROUGH the impedance controller, BEFORE
+    homing. A direct joint ramp to home sweeps the arm through the bin and topples the just-reoriented object;
+    lifting clear of the scene first avoids that (and disengages from a timeout-on-contact). Jacobian damped-
+    least-squares turns the Cartesian up-step into Δq: dq = Jᵀ(JJᵀ+λ²I)⁻¹·twist, twist=[0,0,dz-step,0,0,0].
+    Returns True once it has cleared dz, False on timeout. No-op if dz<=0."""
+    if dz <= 0:
+        return True
+    z_target = float(np.asarray(ctrl.get_state()["T_base_ee"])[2, 3]) + dz
+    t0 = time.monotonic()
+    while True:
+        st = ctrl.get_state()
+        z = float(np.asarray(st["T_base_ee"])[2, 3])
+        if z_target - z < tol:
+            return True
+        if time.monotonic() - t0 > timeout:
+            return False
+        J = np.asarray(st["jacobian"], float)                # (6,7) base-frame zero-Jacobian
+        twist = np.zeros(6); twist[2] = min(step, z_target - z)   # +z only, no rotation -> pure vertical retract
+        dq = J.T @ np.linalg.solve(J @ J.T + (lam ** 2) * np.eye(6), twist)
+        ctrl.set_action(np.concatenate([dq, DEFAULT_KP, np.full(7, 2.0)]))   # set_action clamps Δq to max_dq
+        time.sleep(1.0 / hz)
+
+
 def _impedance_goto(ctrl, q_home, hz=10.0, step=0.1, tol=0.03, timeout=15.0):
     """Ramp the arm to q_home THROUGH the running impedance controller (compliant torque, loose collision),
     NOT the position controller. A reorient that TIMED OUT parked on the object leaves the arm loaded; position
@@ -71,6 +95,10 @@ def main():
     ap.add_argument("--reference-mode", choices=["measured", "commanded"], default="measured")
     ap.add_argument("--home", type=float, nargs=7, default=Q_HOME, metavar="Q",
                     help="home joint pose to park at on startup [rad] (default: Franka ready)")
+    ap.add_argument("--reset-lift", type=float, default=0.15,
+                    help="on reset, retract the EE straight UP by this many metres to clear the scene BEFORE homing, "
+                         "so the arm doesn't sweep a direct joint path through the bin and topple the reoriented object "
+                         "(0 = home directly)")
     ap.add_argument("--no-home", action="store_true", help="don't move to home on startup")
     ap.add_argument("--no-gripper", action="store_true", help="don't close the gripper on startup")
     ap.add_argument("--grip-force", type=float, default=40.0, help="gripper close force [N]")
@@ -166,8 +194,10 @@ def main():
             ctrl.stop()                            # end the current torque loop
             ctrl = make_impedance()                # recovers the reflex + re-arms torque at the CURRENT (loaded) pose:
             #                                        compliant + loose collision -> holds without re-tripping the Reflex.
-            _impedance_goto(ctrl, args.home)       # ramp to home THROUGH the impedance controller (NOT position control,
-            #                                        so a timeout parked on the object can't Reflex-reject the home move).
+            _impedance_lift(ctrl, args.reset_lift) # retract straight UP first to CLEAR the scene, so homing doesn't
+            #                                        sweep the arm through the bin and topple the reoriented object.
+            _impedance_goto(ctrl, args.home)       # THEN ramp to home THROUGH the impedance controller (NOT position
+            #                                        control, so a timeout parked on the object can't Reflex-reject it).
             grip_action = req.get("gripper", "close")   # NOT `grip` — that's the GripperService
             if grip_action in ("close", "shut", "open"):
                 ctrl.stop()                        # set_gripper opens a fresh Gripper connection -> must NOT be mid-RT session
