@@ -24,13 +24,37 @@ import sys
 import time
 import traceback
 
+import numpy as np
 import zmq
 import pylibfranka as franka
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `controllers`
-from controllers.joint_impedance_controller import JointImpedanceController
+from controllers.joint_impedance_controller import JointImpedanceController, DEFAULT_KP
 from controllers.gripper_service import GripperService
 from controllers.home import Q_HOME, go_home, set_gripper
+
+
+def _impedance_goto(ctrl, q_home, hz=10.0, step=0.1, tol=0.03, timeout=15.0):
+    """Ramp the arm to q_home THROUGH the running impedance controller (compliant torque, loose collision),
+    NOT the position controller. A reorient that TIMED OUT parked on the object leaves the arm loaded; position
+    control re-trips the Reflex at configure (its low collision thresholds vs the residual contact force), but
+    the impedance loop just holds + eases off compliantly. Streams a per-tick Δq toward home (bounded to `step`
+    rad, ~= the golden max-dq, so it's gentle even if the server runs without --max-dq) at the policy's ~10 Hz
+    cadence with critically-damped default gains, until reached. Returns True if it arrived, False on timeout."""
+    q_home = np.asarray(q_home, dtype=float)
+    kd = np.full(7, 2.0)                          # Kd COEFFICIENT (set_action multiplies by sqrt(Kp)); 2.0 ~= critical
+    dt = 1.0 / hz
+    t0 = time.monotonic()
+    while True:
+        q = np.asarray(ctrl.get_state()["q"], dtype=float)
+        err = q_home - q
+        if float(np.max(np.abs(err))) < tol:
+            return True
+        if time.monotonic() - t0 > timeout:
+            return False
+        d = np.clip(err, -step, step)            # bounded per-tick target advance -> gentle, server-max_dq-independent
+        ctrl.set_action(np.concatenate([d, DEFAULT_KP, kd]))
+        time.sleep(dt)
 
 
 def main():
@@ -138,14 +162,17 @@ def main():
             gs = set_gripper(args.ip, action, width=req.get("width", 0.0), force=req.get("force", args.grip_force))
             ctrl = make_impedance()                # recovers + waits-still + re-arms at the current pose (no home)
             return {"ok": True, "width": float(gs.width), "is_grasped": bool(gs.is_grasped)}
-        if cmd == "reset":                         # episode reset (BLOCKING): stop -> recover -> home (+gripper) -> re-arm
-            ctrl.stop()                            # end the torque loop; firmware idle-holds during the move
-            robot.automatic_error_recovery()       # clear any latched reflex (e.g. from the Ctrl-C stop) so the home Move isn't rejected
-            go_home(robot, args.home)              # async position -> home, then released
+        if cmd == "reset":                         # episode reset (BLOCKING): recover -> impedance-home -> gripper -> re-arm
+            ctrl.stop()                            # end the current torque loop
+            ctrl = make_impedance()                # recovers the reflex + re-arms torque at the CURRENT (loaded) pose:
+            #                                        compliant + loose collision -> holds without re-tripping the Reflex.
+            _impedance_goto(ctrl, args.home)       # ramp to home THROUGH the impedance controller (NOT position control,
+            #                                        so a timeout parked on the object can't Reflex-reject the home move).
             grip_action = req.get("gripper", "close")   # NOT `grip` — that's the GripperService
             if grip_action in ("close", "shut", "open"):
+                ctrl.stop()                        # set_gripper opens a fresh Gripper connection -> must NOT be mid-RT session
                 set_gripper(args.ip, grip_action, force=args.grip_force)
-            ctrl = make_impedance()                # FRESH controller reads home -> holds there, no jump
+                ctrl = make_impedance()            # re-arm at home
             return {"ok": True, "mode": "reset-home"}
         return {"ok": False, "error": f"unknown cmd: {cmd!r}"}
 
